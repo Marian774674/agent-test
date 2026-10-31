@@ -66,6 +66,8 @@ public class AskServiceImpl implements AskService {
     private static final Logger log = LoggerFactory.getLogger(AskServiceImpl.class);
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final DateTimeFormatter SPACE_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
+    /** 传给 Dify 的当前时间；截到秒，固定 ISO-8601 本地时间格式。 */
+    private static final DateTimeFormatter ISO_SECONDS = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
 
     /** spec §7.4：融合后的字符预算与条目上限。 */
     static final int CHAR_BUDGET = 30_000;
@@ -339,7 +341,8 @@ public class AskServiceImpl implements AskService {
                     "stage", "resolve",
                     "question", question,
                     "known_contacts", knownContactsJson(),
-                    "owner_aliases", appSettingService.getOrDefault("owner_aliases", "")));
+                    "owner_aliases", appSettingService.getOrDefault("owner_aliases", ""),
+                    "current_time", currentTime()));
         } catch (Exception e) {
             log.warn("查询理解失败，按原问题检索：{}", e.toString());
             return new Resolved(List.of(), List.of(), List.of(question), "", null, null);
@@ -397,7 +400,8 @@ public class AskServiceImpl implements AskService {
                     "stage", "expand",
                     "question", question,
                     "candidates", truncate(renderCandidates(candidates), EXPAND_CHAR_LIMIT),
-                    "time_hint", nullToEmpty(timeHint)));
+                    "time_hint", nullToEmpty(timeHint),
+                    "current_time", currentTime()));
             List<String> queries = strings(outputs.get("queries")).stream()
                     .filter(query -> !query.isBlank())
                     .limit(MAX_QUERIES)
@@ -417,6 +421,11 @@ public class AskServiceImpl implements AskService {
                                 String timeHint,
                                 LocalDateTime timeFrom,
                                 LocalDateTime timeTo) {
+    }
+
+    /** Dify 用 current_time 把「上周」这类相对说法换算成绝对区间；截到秒，格式固定。 */
+    private static String currentTime() {
+        return LocalDateTime.now().withNano(0).format(ISO_SECONDS);
     }
 
     /** Dify 只做格式约定；解析不了就两个都置空，按无时间提示处理，不报错（spec §7.1）。 */

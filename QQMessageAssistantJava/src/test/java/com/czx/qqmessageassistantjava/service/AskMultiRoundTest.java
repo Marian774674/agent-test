@@ -22,6 +22,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -101,7 +102,9 @@ class AskMultiRoundTest {
                         Map.of("answer", "学霸就是李四",
                                 "used_ids", "[\"msg:9930001\",\"msg:9930002\"]")));
 
+        LocalDateTime before = LocalDateTime.now().withNano(0);
         AskResponse response = askService.ask(question("小明跟谁住一屋"));
+        LocalDateTime after = LocalDateTime.now().withNano(0).plusSeconds(1);
 
         assertThat(response.getAnswer()).contains("李四");
         assertThat(response.getScope().getRounds()).isEqualTo(2);
@@ -117,6 +120,18 @@ class AskMultiRoundTest {
                 .findFirst().orElseThrow();
         assertThat(String.valueOf(expandInput.get("candidates"))).contains("msg:9930001");
         assertThat(expandInput.get("time_hint")).isEqualTo("");
+
+        // Dify 用 current_time 换算相对时间：resolve / expand 都要带，answer 不带
+        for (Map<String, Object> input : inputs.getAllValues()) {
+            String stage = String.valueOf(input.get("stage"));
+            if ("answer".equals(stage)) {
+                assertThat(input).as("answer 不需要 current_time").doesNotContainKey("current_time");
+                continue;
+            }
+            assertThat(input).as("%s 应带 current_time", stage).containsKey("current_time");
+            LocalDateTime sent = LocalDateTime.parse(String.valueOf(input.get("current_time")));
+            assertThat(sent).as("%s 的 current_time", stage).isBetween(before, after);
+        }
 
         // R7：第 2 轮检索排除第 1 轮已经见过的 key
         ArgumentCaptor<Set<String>> excludes = ArgumentCaptor.forClass(Set.class);
