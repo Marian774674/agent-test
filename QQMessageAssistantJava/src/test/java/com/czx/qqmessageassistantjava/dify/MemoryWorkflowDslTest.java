@@ -116,6 +116,37 @@ class MemoryWorkflowDslTest {
     }
 
     @Test
+    void old_is_resolve_false_to_answer_edge_is_gone() {
+        assertThat(routes())
+                .as("is_resolve 的 false 分支已被 is_expand 取代，不能再直连 answer_llm")
+                .doesNotContain("is_resolve[false]→answer_llm");
+    }
+
+    @Test
+    void expand_chain_runs_llm_parse_end() {
+        assertThat(routes())
+                .as("expand_llm → parse_expand → end_expand 必须完整")
+                .contains("expand_llm[source]→parse_expand", "parse_expand[source]→end_expand");
+    }
+
+    @Test
+    void end_node_output_names_are_globally_unique() {
+        List<String> names = new ArrayList<>();
+        for (Map<String, Object> node : nodes()) {
+            Map<String, Object> data = dataOf(node);
+            if ("end".equals(data.get("type"))) {
+                for (Map<String, Object> output : listOfMaps(data.get("outputs"))) {
+                    names.add(String.valueOf(output.get("variable")));
+                }
+            }
+        }
+        assertThat(names).as("End 节点输出名不能重复：%s", names).doesNotHaveDuplicates();
+        assertThat(names).contains(
+                "expand_queries", "expand_entities", "expand_time_hint",
+                "expand_time_from", "expand_time_to");
+    }
+
+    @Test
     void expand_branch_is_wired_between_resolve_and_answer() {
         assertThat(edges())
                 .as("is_resolve 的 false 分支应进入 is_expand")
@@ -171,6 +202,20 @@ class MemoryWorkflowDslTest {
         Map<String, Object> node = nodesById().get(nodeId);
         assertThat(node).as("节点 %s 应存在", nodeId).isNotNull();
         return (Map<String, Object>) node.get("data");
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> dataOf(Map<String, Object> node) {
+        return (Map<String, Object>) node.get("data");
+    }
+
+    /** 把每条边收成 {@code source[handle]→target}，便于做精确的接线断言。 */
+    private static List<String> routes() {
+        List<String> routes = new ArrayList<>();
+        for (Map<String, Object> edge : edges()) {
+            routes.add(edge.get("source") + "[" + edge.get("sourceHandle") + "]→" + edge.get("target"));
+        }
+        return routes;
     }
 
     @SuppressWarnings("unchecked")

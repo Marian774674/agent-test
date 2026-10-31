@@ -402,13 +402,15 @@ public class AskServiceImpl implements AskService {
                     "candidates", truncate(renderCandidates(candidates), EXPAND_CHAR_LIMIT),
                     "time_hint", nullToEmpty(timeHint),
                     "current_time", currentTime()));
-            List<String> queries = strings(outputs.get("queries")).stream()
+            // End 节点的输出名必须全局唯一，expand 用 expand_* 前缀，避免与 resolve 撞名。
+            List<String> queries = strings(outputs.get("expand_queries")).stream()
                     .filter(query -> !query.isBlank())
                     .limit(MAX_QUERIES)
                     .toList();
-            List<String> entities = strings(outputs.get("entities"));
-            LocalDateTime[] range = parseTimeRange(outputs.get("time_from"), outputs.get("time_to"));
-            return new ExpandResult(queries, entities, text(outputs.get("time_hint")).trim(),
+            List<String> entities = strings(outputs.get("expand_entities"));
+            LocalDateTime[] range = parseTimeRange(outputs.get("expand_time_from"),
+                    outputs.get("expand_time_to"));
+            return new ExpandResult(queries, entities, text(outputs.get("expand_time_hint")).trim(),
                     range[0], range[1]);
         } catch (Exception e) {
             log.warn("expand 失败，结束多轮检索：{}", e.toString());

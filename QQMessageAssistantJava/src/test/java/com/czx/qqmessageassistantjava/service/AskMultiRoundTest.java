@@ -97,7 +97,7 @@ class AskMultiRoundTest {
         stubRetrieval(result(Map.of(Channel.MSG_LEXICAL, List.of(room))),
                 result(Map.of(Channel.MSG_MENTION, List.of(realName))));
         stubStages(resolve(),
-                List.of(Map.of("entities", "[\"学霸\"]")),
+                List.of(Map.of("expand_entities", "[\"学霸\"]")),
                 List.of(Map.of("answer", "", "used_ids", "[]"),
                         Map.of("answer", "学霸就是李四",
                                 "used_ids", "[\"msg:9930001\",\"msg:9930002\"]")));
@@ -147,7 +147,7 @@ class AskMultiRoundTest {
         stubRetrieval(result(Map.of(Channel.MSG_LEXICAL, List.of(first))),
                 result(Map.of(Channel.MSG_MENTION, List.of(second))));
         stubStages(resolve(),
-                List.of(Map.of("queries", "[\"学霸\"]")),
+                List.of(Map.of("expand_queries", "[\"学霸\"]")),
                 List.of(Map.of("answer", "", "used_ids", "[]"),
                         Map.of("answer", "两人合起来是李四",
                                 "used_ids", "[\"msg:9930011\",\"msg:9930012\"]")));
@@ -168,9 +168,9 @@ class AskMultiRoundTest {
     void stops_after_three_rounds_and_says_not_found() {
         stubRetrieval();
         stubStages(resolve(),
-                List.of(Map.of("queries", "[\"第一轮改写\"]"),
-                        Map.of("queries", "[\"第二轮改写\"]"),
-                        Map.of("queries", "[\"第三轮改写\"]")),
+                List.of(Map.of("expand_queries", "[\"第一轮改写\"]"),
+                        Map.of("expand_queries", "[\"第二轮改写\"]"),
+                        Map.of("expand_queries", "[\"第三轮改写\"]")),
                 List.of());
 
         AskResponse response = askService.ask(question("完全不存在的事情" + System.nanoTime()));
@@ -189,7 +189,7 @@ class AskMultiRoundTest {
         Candidate realName = candidate("msg", 9_930_021L, "李四", "学霸叫李四");
         stubRetrieval(result(Map.of()), result(Map.of(Channel.MSG_MENTION, List.of(realName))));
         stubStages(resolve(),
-                List.of(Map.of("queries", "[\"学霸\"]")),
+                List.of(Map.of("expand_queries", "[\"学霸\"]")),
                 List.of(Map.of("answer", "李四", "used_ids", "[\"msg:9930021\"]")));
 
         AskResponse response = askService.ask(question("小明跟谁住一屋"));
@@ -267,7 +267,7 @@ class AskMultiRoundTest {
                         Channel.MSG_SEMANTIC, List.of())));
         // 第 1 轮答不出 → expand 给新词；第 2 轮仍答不出 → 第 2 次 expand 给空，结束
         stubStages(resolve(),
-                List.of(Map.of("queries", "[\"第二轮\"]")),
+                List.of(Map.of("expand_queries", "[\"第二轮\"]")),
                 List.of(Map.of("answer", "", "used_ids", "[]")));
 
         AskResponse response = askService.ask(question("通道计数" + System.nanoTime()));
@@ -296,7 +296,7 @@ class AskMultiRoundTest {
         stubRetrieval(result(Map.of(Channel.MSG_LEXICAL, List.of(first))),
                 result(Map.of(Channel.MSG_PERSON, List.of(second))));
         stubStages(resolve(),
-                List.of(Map.of("queries", "[\"学霸\"]")),
+                List.of(Map.of("expand_queries", "[\"学霸\"]")),
                 List.of(Map.of("answer", "", "used_ids", "[]"),
                         Map.of("answer", "李四", "used_ids", "[\"msg:9930042\"]")));
 

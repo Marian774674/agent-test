@@ -1363,23 +1363,23 @@ workflow:
         - value_selector:
           - parse_expand
           - queries
-          variable: queries
+          variable: expand_queries
         - value_selector:
           - parse_expand
           - entities
-          variable: entities
+          variable: expand_entities
         - value_selector:
           - parse_expand
           - time_hint
-          variable: time_hint
+          variable: expand_time_hint
         - value_selector:
           - parse_expand
           - time_from
-          variable: time_from
+          variable: expand_time_from
         - value_selector:
           - parse_expand
           - time_to
-          variable: time_to
+          variable: expand_time_to
         selected: false
         title: 结束（扩展）
         type: end
