@@ -248,16 +248,20 @@ public class OnnxEmbeddingService implements EmbeddingService {
             return Loaded.unavailable(modelId, dim);
         }
 
-        Path modelDir = Path.of(properties.getModelDir());
-        Path modelPath = modelDir.resolve("model.onnx");
-        Path vocabPath = modelDir.resolve("vocab.txt");
-        if (!Files.isRegularFile(modelPath) || !Files.isRegularFile(vocabPath)) {
-            log.warn("语义检索未启用：模型文件缺失（model={}, vocab={}），按降级处理",
-                    modelPath.toAbsolutePath(), vocabPath.toAbsolutePath());
-            return Loaded.unavailable(modelId, dim);
-        }
-
+        Path modelPath = null;
+        Path vocabPath = null;
         try {
+            // 路径解析也放进 try：配错目录（非法字符、null）只能是「语义不可用」，
+            // 不能把异常抛到容器启动里——model-dir 写错也要能起来（Review Focus 5）。
+            Path modelDir = Path.of(properties.getModelDir());
+            modelPath = modelDir.resolve("model.onnx");
+            vocabPath = modelDir.resolve("vocab.txt");
+            if (!Files.isRegularFile(modelPath) || !Files.isRegularFile(vocabPath)) {
+                log.warn("语义检索未启用：模型文件缺失（model={}, vocab={}），按降级处理",
+                        modelPath.toAbsolutePath(), vocabPath.toAbsolutePath());
+                return Loaded.unavailable(modelId, dim);
+            }
+
             WordPieceTokenizer tokenizer = new WordPieceTokenizer(vocabPath);
             OrtEnvironment environment = OrtEnvironment.getEnvironment();
             OrtSession.SessionOptions options = new OrtSession.SessionOptions();
@@ -293,7 +297,8 @@ public class OnnxEmbeddingService implements EmbeddingService {
                     inputIdsName, attentionMaskName, feedTokenTypeIds, preferredOutput);
         } catch (Throwable t) {
             // 包括 UnsatisfiedLinkError：native 库缺失也不能拖垮启动
-            log.warn("语义检索未启用：模型加载失败（path={}）", modelPath.toAbsolutePath(), t);
+            log.warn("语义检索未启用：模型加载失败（path={}）",
+                    modelPath == null ? properties.getModelDir() : modelPath, t);
             return Loaded.unavailable(modelId, dim);
         }
     }

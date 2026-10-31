@@ -43,6 +43,21 @@ class OnnxEmbeddingServiceTest {
         assertThat(svc.available()).isFalse();
     }
 
+    /**
+     * Review Focus 5：模型目录配错不能让应用起不来。
+     * 非法路径（含 NUL）与 null 都必须在构造期被降级处理，而不是抛到容器启动里。
+     */
+    @Test
+    void malformed_model_dir_degrades_without_throwing() {
+        EmbeddingProperties broken = propsWithModelDir(Path.of("./models/placeholder"));
+        broken.setModelDir("bad\u0000path");
+        assertThat(OnnxEmbeddingService.create(broken).available()).isFalse();
+
+        EmbeddingProperties missing = propsWithModelDir(Path.of("./models/placeholder"));
+        missing.setModelDir(null);
+        assertThat(OnnxEmbeddingService.create(missing).available()).isFalse();
+    }
+
     @Test
     void corrupt_model_file_degrades_without_throwing() throws Exception {
         Path dir = Files.createTempDirectory("bad-model");
