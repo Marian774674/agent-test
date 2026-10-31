@@ -66,7 +66,8 @@ public final class RrfFusion {
 
     /**
      * 通道内下标即名次（1-based 计分）：第 {@code i} 位贡献 {@code 1.0 / (60 + i + 1)}。
-     * 同一 key 出现在多个通道（或同一通道多个位置）时分数累加，代表条目取首次出现者。
+     * 同一通道内同一 key 只取首次（最好）出现的名次，不重复累加；
+     * 同一 key 出现在不同通道时，各通道的贡献仍然相加。代表条目取首次出现者。
      */
     private static void collectScores(RetrievalResult result, Map<String, Double> scores,
                                       Map<String, Candidate> byKey) {
@@ -75,9 +76,10 @@ public final class RrfFusion {
             if (list == null) {
                 continue;
             }
+            Set<String> seenInChannel = new HashSet<>();
             for (int i = 0; i < list.size(); i++) {
                 Candidate candidate = list.get(i);
-                if (candidate == null) {
+                if (candidate == null || !seenInChannel.add(candidate.key())) {
                     continue;
                 }
                 scores.merge(candidate.key(), 1.0 / (RRF_K + i + 1), Double::sum);
@@ -118,7 +120,9 @@ public final class RrfFusion {
 
     /**
      * 在分层后的 RRF 顺序上按字符预算与条目上限取条目。预算按
-     * {@code label.length() + content.length() + 16}（null 记 0）累加，超出预算即停止加入。
+     * {@code label.length() + content.length() + 16}（null 记 0）累加。
+     * 放不下的条目跳过但继续向后扫描，只有达到 maxItems 才停止，
+     * 避免一个超长条目浪费掉后面本可容纳的条目。
      */
     private static List<Candidate> selectWithinBudget(List<String> tiered, Map<String, Candidate> byKey,
                                                       int charBudget, int maxItems) {
@@ -130,11 +134,10 @@ public final class RrfFusion {
             }
             Candidate candidate = byKey.get(key);
             int cost = charCost(candidate);
-            if (usedChars + cost > charBudget) {
-                break;
+            if (usedChars + cost <= charBudget) {
+                usedChars += cost;
+                selected.add(candidate);
             }
-            usedChars += cost;
-            selected.add(candidate);
         }
         return selected;
     }
