@@ -47,11 +47,27 @@
 | **Dify 严禁直接处理文件流** | 文件二进制读写由 LangBot 插件（Python）承担；Dify 只做「决定填什么」 |
 | **风格记忆禁止实时改 System Prompt** | 只允许定期离线总结后更新画像 Prompt；事实记忆才可实时写 |
 | **Spring Boot 不直连 NapCat** | 一切 QQ 侧动作（发消息/发文件）经 LangBot 封装，协议细节不泄漏进业务层 |
+| **检索规则不进 Dify** | 七路召回、RRF 融合、时间软分段、预算截断、终态表与 `scope` 全在 Spring；Dify 只做 resolve / answer / expand 的语义判断。检索只服务前端 `/api/ask`，不接入 QQ 端 |
 
 > 第二、三条是本项目历史上最容易被误读的地方：Dify **可以**发 HTTP 去改数据（否则“改哪条备忘”
 > 永远表达不出来，见 `agent_contract.md` §3），但**不可以**自己判断“能不能改、改成什么状态”。
 > 判据只有一条：**规则（阈值/枚举/状态机/重算）出现在哪里**。出现在 Dify 的提示词或代码节点里 = 越线；
 > 出现在 Spring 的服务层 = 合规。
+
+### 检索职责（F4+ 智能检索）
+
+`/api/ask` 的检索链路（详见 [`intelligent_retrieval.md`](./intelligent_retrieval.md) §7）：
+
+| 环节 | 归属 | 说明 |
+|---|---|---|
+| 语义理解 | **Dify** | `stage=resolve` 抽实体/关键词/改写查询/时间区间；`stage=answer` 在候选集内作答并给 `used_ids`；`stage=expand` 在证据不足时给新检索串/实体。Dify **不接触消息表** |
+| 七路召回 | **Spring** | `note / msg-person / msg-mention / msg-lexical / msg-semantic / memo / file`；除 `msg-person` 按主体外，其余不带会话过滤 |
+| 融合与截断 | **Spring** | RRF（`Σ 1/(60+rank)`）去重、时间软分段、30000 字符 / 150 条预算 |
+| 终态与 scope | **Spring** | 证据校验、反问/降级/找不到的终态表、`scope` 的通道计数与 `message` |
+| 文件 I/O | **LangBot 插件** | 不变；检索不读写文件正文，也不改动插件 |
+
+**检索只由前端「查询」页调用 `/api/ask`**：QQ 端不提问、插件不改；Spring 也不为了检索去调 NapCat。
+模型推理跑在 Spring 进程内（ONNX）或走外部 OpenAI 兼容端点，不引入 Dify Dataset 双写。
 
 ### 各组件擅长的能力
 

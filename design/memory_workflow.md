@@ -65,6 +65,12 @@ Authorization: Bearer {dify.workflow.api-key}
   Spring 遇到词表外的值一律落 `其他`，不报错。
 - `subject_sender_id` 为空 / `null` = 说的是主人自己。给了值却读不成 QQ 号的（比如写成昵称），
   **整条 note 丢弃**——不能退化成 `null`，那会把别人的事实记到主人头上。
+- `subject_sender_id` **可以取本批发言人的 `sender_id`，也可以取 `known_contacts` 里、
+  且其任一 alias 在证据消息正文中出现过的联系人**。后者用于「小红说『小明生日 11 月 11』」
+  这类被提到但本批没发言的人；说主人自己时仍填 `null`。
+- 这条规则由 Spring 在 `MemoryJobServiceImpl.write` 里硬校验：主体不在「本批发言人 ∪
+  本批 `known_contacts`」、或（非本批发言人时）其 alias 未出现在**本条 note 自己的**
+  `source_msg_ids` 正文中 → **整条 note 丢弃**，记日志、不写库。提示词只负责倾向，校验负责正确。
 - 两个 id 字段都接受数字或数字字符串（`"123"`）：模型经常把 QQ 号写成字符串，解析节点统一转成 int。
 - `source_msg_ids` 必须落在本批次内；**任何一项证据不在批次内，整条 note 丢弃**。
   `sender_id` 不在本批次内的 contact 同样丢弃（防模型编 QQ 号）。
@@ -169,7 +175,9 @@ messages:
 1. 行的六段格式 `id|sender_id|昵称|群名|HH:mm|正文`，以及「每行自带群名」意味着什么。
 2. `predicate` 的受控词表逐字列出（生日 / 姓名 / 专业 / 班级 / 学号 / 住址 / 电话 / 时间安排 / 偏好 / 关系 / 其他），
    词表外一律用「其他」。
-3. `subject_sender_id` 只能取输入行里的 `sender_id`，说主人自己时填 `null`。
+3. `subject_sender_id` 可以取输入行里的 `sender_id`（本批发言人），也可以取 `known_contacts` 里、
+   且其 alias 在证据消息正文中出现过的联系人；说主人自己时填 `null`。
+   Spring 会硬校验这个归属（见 §1.2），不满足即整条丢弃。
 4. `source_msg_ids` 只能取输入行开头的 id，至少一个，拿不出证据的不要输出。
 
 ### 4.3 resolve

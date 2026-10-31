@@ -40,6 +40,8 @@
 | 12 | `memo_change_log` | 备忘变更留痕 + Agent 写操作幂等台账 | `design/agent_contract.md` §3 |
 | 13 | `contact` | 认识的人：称呼 ↔ QQ 号的映射（认人 / 反问闭环） | F4 历史查询，`core_features.md` §7 |
 | 14 | `memory_note` | 夜间事实归纳（受控谓词 + 证据 id） | F4 历史查询，`core_features.md` §7 |
+| 15 | `message_embedding` | 消息向量（语义召回，只索引 `IN`） | `intelligent_retrieval.md` §3.1 |
+| 16 | `ask_trace` | 一次问答的检索轨迹（问题/通道/计数，不存正文） | `intelligent_retrieval.md` §3.3 |
 
 ---
 
@@ -75,11 +77,14 @@ CREATE TABLE `draft` (
 CREATE TABLE `message_log` (
   `id`         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `sender_id`  BIGINT UNSIGNED NOT NULL,
+  `sender_name` VARCHAR(64)    NULL COMMENT '发送者昵称',
   `chat_id`    BIGINT UNSIGNED NULL,
+  `chat_name`  VARCHAR(128)    NULL COMMENT '群名；私聊为 NULL',
   `conversation_id` VARCHAR(64) NULL COMMENT 'Dify conversation_id',
   `message_id` VARCHAR(64)     NULL COMMENT '平台消息 id',
   `dedupe_key` VARCHAR(128)    NULL COMMENT '幂等键，重复写入被忽略',
   `direction`  VARCHAR(8)      NOT NULL COMMENT 'IN|OUT',
+  `reply_kind` VARCHAR(8)      NULL COMMENT 'OUT 专用：TASK|CHAT',
   `msg_type`   VARCHAR(16)     NOT NULL COMMENT 'text|image|file...',
   `content`    TEXT            NULL,
   `created_at` DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -87,12 +92,17 @@ CREATE TABLE `message_log` (
   UNIQUE KEY `uk_dedupe` (`dedupe_key`),
   KEY `idx_sender_created` (`sender_id`, `created_at`),
   KEY `idx_created` (`created_at`),
-  KEY `idx_conversation` (`conversation_id`)
+  KEY `idx_conversation` (`conversation_id`),
+  KEY `idx_chat_created` (`chat_id`, `created_at`),
+  FULLTEXT KEY `ft_content` (`content`) WITH PARSER ngram
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='统一消息日志';
 ```
 
 > 只增不删，故无 `is_deleted`/`updated_at`。写入方为 LangBot（异步、可批量）。
 > `dedupe_key` 走唯一索引：批内/重试重复的日志被跳过，不会写入两条；`NULL` 不参与唯一性判断。
+> `ft_content` 是中文全文召回（`msg-mention` / `msg-lexical`）的依据，使用 MySQL 8 自带的
+> `ngram` 分词（`ngram_token_size` 默认 2，单字查询匹配不到）。迁移见
+> `db/migrations/2026-10-31-embedding-retrieval.sql`。
 
 ### 3. `memo` — 备忘录主体
 
@@ -367,6 +377,49 @@ CREATE TABLE `memory_note` (
 > 词表外的值落 `其他`。
 > **`source_msg_ids` 必须落在本批次内**，否则整条丢弃——没有原文支撑的「事实」比没有事实更糟。
 
+### 14. `message_embedding` — 消息向量
+
+```sql
+CREATE TABLE `message_embedding` (
+  `message_log_id` BIGINT UNSIGNED NOT NULL,
+  `model`          VARCHAR(64) NOT NULL COMMENT '模型标识，换模型=全量重建',
+  `dim`            SMALLINT NOT NULL,
+  `vector`         MEDIUMBLOB NOT NULL COMMENT 'float32 小端，长度 = dim*4',
+  `created_at`     DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`message_log_id`,`model`),
+  KEY `idx_model` (`model`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='消息向量';
+```
+
+> 只索引 `direction='IN'` 且正文非空的消息（机器人发出的 `OUT` 不是证据）。
+> 768 维以内都在 3KB/条以内，10 万条约 200MB；查询时全量读入进程内 off-heap 索引做暴力余弦。
+> 主键带 `model`：换模型即全量重建，旧模型的向量不会与新模型混用。
+
+### 15. `ask_trace` — 一次问答的检索轨迹
+
+```sql
+CREATE TABLE `ask_trace` (
+  `id`             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `question`       VARCHAR(512)  NOT NULL,
+  `entities`       VARCHAR(512)  NULL,
+  `queries`        VARCHAR(1024) NULL,
+  `channels`       VARCHAR(128)  NULL COMMENT '命中非空的召回通道，逗号分隔',
+  `candidate_cnt`  INT NOT NULL DEFAULT 0,
+  `rounds`         TINYINT NOT NULL DEFAULT 1,
+  `answer`         VARCHAR(1024) NULL,
+  `degraded`       TINYINT NOT NULL DEFAULT 0,
+  `latency_ms`     INT NULL,
+  `created_at`     DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  KEY `idx_created` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='一次问答的检索轨迹';
+```
+
+> 只存问题、实体/查询串、各通道计数与是否降级，**不存原文正文**。
+> 用途：漏答时能回答「当时查了哪几路、各命中几条、向量索引落后多少」，而不是靠猜。
+> 注意列名 `candidate_cnt` 是数据库列（下划线）；`/api/ask` 响应里的同义字段是
+> `scope.candidateCnt`（camelCase）。
+
 ---
 
 ## 四、关系与索引 ↔ 查询场景
@@ -397,6 +450,9 @@ memory_note.source_msg_ids ─ ─ message_log.id         （逗号分隔，应�
 | 认人：一个称呼对到哪些 QQ | `POST /api/ask`（resolve 之后） | `contact.idx_alias` |
 | 某人的全部事实 | `POST /api/ask` 候选集 | `memory_note.idx_subject_pred` |
 | 夜间归纳按游标扫新消息 | `@Scheduled` 00:10 | `message_log` PRIMARY（`id > cursor ORDER BY id LIMIT 200`） |
+| 全文召回（实体/查询串） | `POST /api/ask` 的 `msg-mention` / `msg-lexical` | `message_log.ft_content`（ngram FULLTEXT） |
+| 语义召回（全表向量） | `POST /api/ask` 的 `msg-semantic` | `message_embedding.idx_model` + 进程内 off-heap 索引 |
+| 问答轨迹排查 | 漏答复盘 | `ask_trace.idx_created` |
 
 ---
 

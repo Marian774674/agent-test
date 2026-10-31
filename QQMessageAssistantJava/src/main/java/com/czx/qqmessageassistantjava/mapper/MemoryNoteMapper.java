@@ -42,7 +42,7 @@ public interface MemoryNoteMapper extends BaseMapper<MemoryNote> {
     List<MemoryNote> searchByKeywordsEscaped(@Param("keywords") List<String> keywords,
                                              @Param("limit") int limit);
 
-    /** 召回：主体在本批 person 里的结构化事实，时间倒序（按 id），最多 {@code limit} 条。 */
+    /** 召回：主体在本批 person 里的结构化事实，时间倒序（按 created_at、id），最多 {@code limit} 条。 */
     default List<MemoryNote> selectBySubjects(Collection<Long> subjects, int limit) {
         if (subjects == null || subjects.isEmpty()) {
             return List.of();

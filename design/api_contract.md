@@ -643,20 +643,65 @@ FILE 草稿确认发送成功后，Spring 直接把对应 `taskRef` 的 `status`
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `answer` | string | 结论；降级或认不出人时为空串 |
-| `degraded` | boolean | `true` = 模型引用了候选集之外的东西（或有结论没引用），结论作废，只给证据 |
-| `evidence` | array | `{ type, id, label, content }`；`type ∈ msg/note/memo/file`，`id` 是纯数字，前端用 `type:id` 做 key |
-| `needClarify` | object \| null | `{ alias, candidates: [{ senderId, alias, relation, hint }] }`；`candidates` 为空表示库里没这个称呼，需要用户补 QQ 号 |
+| `answer` | string | 结论；降级、认不出人或找不到时为空串 |
+| `degraded` | boolean | `true` = 作答失败，或模型给了结论但 `used_ids` 越界/为空；结论作废，只给证据 |
+| `evidence` | array | `{ type, id, label, content, source?, quote? }`；`type ∈ msg/note/memo/file`，`id` 是纯数字，前端用 `type:id` 做 key |
+| `needClarify` | object \| null | `{ alias, candidates: [{ senderId, alias, relation, hint }], occurrences }`；`candidates` 为空表示库里没这个称呼，需要用户补 QQ 号 |
+| `scope` | object | 本次检索范围，见下；老前端可忽略 |
 
-**流程**（详细理由见 `memory_workflow.md` §1.3）：
+`evidence[]` 的 `source` / `quote`：
 
-1. Dify `stage=resolve` 抽 `entities`/`keywords`/`time_hint`；
-2. Spring 用 `contact.alias` 精确认人：0 条 → `needClarify`（空候选）；≥2 个不同 QQ → `needClarify`（带候选）；1 条 → 认下；
-3. Spring 按 `sender_id` 查事实与消息、按关键词 LIKE 查事实/消息/备忘/文件，压成 `类型:id|标签|内容`，总量截断；
-4. Dify `stage=answer` 只在这堆行里作答并给出 `used_ids`；
-5. Spring 校验 `used_ids ⊆ 候选集`：不满足即 `degraded=true`、`answer=""`、`evidence` 取前 5 条候选。
+- `source`：出处，格式化字符串。群聊 `群名 · 人名 · MM-dd HH:mm`；私聊 `QQ 对方QQ · 人名 · MM-dd HH:mm`；
+  无发送人名时退回 QQ 号。多条来源用 `；` 连接，最多 3 条，其余以「等 N 条」收尾（N 是**剩余**条数）。
+- `quote`：第一条来源消息的原文，截 200 字。
 
-**不做什么**：不做向量检索、不做多轮追问；一次请求最多两趟 Dify 调用。
+`needClarify.occurrences`：该 alias 在 `message_log`（`direction='IN'`）正文里作为子串出现的行数，
+跨全部会话，显示上限 999。未知 alias 才有值；同名多人的歧义分支为 `null`。
+`occurrences=0` 时不会触发反问，直接按「没找到」返回。
+
+`scope`：
+
+```json
+{
+  "semantic": true,
+  "lag": 0,
+  "rounds": 2,
+  "candidateCnt": 47,
+  "channels": {
+    "note": 3, "msg-person": 5, "msg-mention": 8, "msg-lexical": 12,
+    "msg-semantic": 20, "memo": 0, "file": 0
+  },
+  "message": ""
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `semantic` | 语义通道是否可用 |
+| `lag` | 尚未建立向量的消息条数 |
+| `rounds` | 实际跑了几轮检索（1–3；认人反问的终态路径为 0） |
+| `candidateCnt` | 去重、预算截断前的候选数（注意是 camelCase；DB 的 `ask_trace.candidate_cnt` 仍是下划线列名） |
+| `channels` | **键固定为 7 个，永远出现**：`note / msg-person / msg-mention / msg-lexical / msg-semantic / memo / file`。值为 `null` = 该路没跑、不可用或报错；`0` = 跑了但没有命中。两者不能混 |
+| `message` | 给人看的一句话，前端原样显示；空串表示无需解释。**即使 `answer` 非空也可能非空**（如「未登记的联系人，按名字检索」） |
+
+计数口径：每路原始命中、按查询串累加、去重前，跨轮累加；所以各通道之和可以大于 `candidateCnt`。
+
+**流程**（完整链路与终态表见 `intelligent_retrieval.md` §7）：
+
+1. Dify `stage=resolve` 抽 `entities` / `keywords` / `queries` / `time_hint` / `time_from` / `time_to`；
+   Spring 额外传 `current_time`（ISO 本地时间，秒精度），供 Dify 换算相对时间；
+2. Spring 用 `contact.alias` 精确认人：≥2 个不同 QQ → 立即 `needClarify`（带候选，**不检索**）；
+   0 条 → 记为未知 alias、统计 `occurrences` 后照常检索；1 条 → 认下；
+3. 检索前同步补跑向量（最多 `app.retrieval.pre-run-index-limit`，默认 500 条），剩余写入 `scope.lag`；
+4. 七路召回（全部不带会话过滤）→ RRF 融合去重 → 时间软分段 → 按 30000 字符 / 150 条预算截断；
+5. Dify `stage=answer` 在候选集内作答并给出 `used_ids`；Spring 校验 `used_ids ⊆ 候选集`；
+6. 答不出（空答案 / 作答失败 / 证据越界）且未到第 3 轮 → Dify `stage=expand` 要新检索串/实体后重查，
+   候选集**跨轮累计**；最多 3 轮（含第 1 轮）；
+7. 循环结束后按终态表返回结论、证据、`needClarify` 或 `scope.message`。
+
+**不做什么**：不做 QQ 端提问（检索只服务前端 `/api/ask`）；不做会话范围筛选、结果分页；
+不做 ANN 索引（全表暴力余弦，50 万条以上再说）；不检索文件正文；不用 Dify Dataset。
+多轮追问最多 3 轮（含第 1 轮），不是无限追问。
 
 ### 14.5 `POST /api/memory/rebuild` — 全量补算
 
@@ -666,6 +711,29 @@ FILE 草稿确认发送成功后，Spring 直接把对应 `taskRef` 的 `status`
 
 **注意**：幂等靠 `(subject, predicate, value)` 去重，重复补算不会产生重复行；但**不会删除**已经写进去的旧事实。
 这是运维/首次导入用的口子，不是日常开关——日常靠 `app_setting.memory_job_enabled=1` + 每天 00:10 的定时任务。
+
+### 14.5.1 `POST /api/memory/embeddings/rebuild` — 重建语义向量索引
+
+**请求体**：无（当前模型由 `app.embedding.model-id` 决定）。
+
+**行为**：删除该模型的全部 `message_embedding` 行，按批重算整张 `message_log`，
+最后重新加载进程内索引。**仅手动触发**，不在夜间自动跑。
+
+**响应** `data` = 本次重新写入的向量行数。向量服务不可用时返回 `0`，且**不删除**已有数据。
+
+### 14.5.2 `GET /api/memory/embeddings/status` — 语义索引状态
+
+**响应** `data`
+
+```json
+{ "semantic": true, "indexed": 12345, "lag": 0 }
+```
+
+| 字段 | 说明 |
+|---|---|
+| `semantic` | 语义通道是否可用（向量服务就绪且索引加载成功） |
+| `indexed` | 当前进程内索引的向量条数 |
+| `lag` | 尚缺向量的 `IN` 消息条数 |
 
 ### 14.6 `GET /api/chat-settings/reply-context` — 自动回复的决策快照（LangBot）
 
