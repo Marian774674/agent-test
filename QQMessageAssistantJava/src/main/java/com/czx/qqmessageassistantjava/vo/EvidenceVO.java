@@ -9,4 +9,8 @@ public class EvidenceVO {
     private String id;
     private String label;
     private String content;
+    /** 出处：群聊「群名 · 人名 · MM-dd HH:mm」，私聊「QQ 对方QQ · 人名 · MM-dd HH:mm」 */
+    private String source;
+    /** 第一条来源消息的原文，截 200 字 */
+    private String quote;
 }
