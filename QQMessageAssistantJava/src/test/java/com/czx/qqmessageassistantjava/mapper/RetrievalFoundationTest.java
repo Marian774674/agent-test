@@ -10,6 +10,7 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -72,6 +73,27 @@ class RetrievalFoundationTest {
         insertIn(9_900_201L, 100L, "小红", "折扣 50% 起");
         assertThat(messageLogMapper.countMentions("50%")).isEqualTo(1);
         assertThat(messageLogMapper.countMentions("5%0")).isEqualTo(0);
+    }
+
+    /**
+     * 增量索引任务（Tasks 3/5）依赖这条 SQL 与 record 构造器映射。
+     * 空串 / NULL 的消息没有可检索的内容，不应出现在待办里。
+     */
+    @Test
+    void selectMissing_returns_seeded_row() {
+        insertIn(9_900_301L, 100L, "小红", "需要向量化的消息");
+        insertIn(9_900_302L, 100L, "小红", "");
+        insertIn(9_900_303L, 100L, "小红", null);
+
+        List<MessageEmbeddingMapper.MissingMessage> missing = mapper.selectMissing("m1", 10);
+
+        assertThat(missing).extracting(MessageEmbeddingMapper.MissingMessage::id)
+                .contains(9_900_301L)
+                .doesNotContain(9_900_302L, 9_900_303L);
+        assertThat(missing)
+                .filteredOn(m -> m.id() == 9_900_301L)
+                .extracting(MessageEmbeddingMapper.MissingMessage::content)
+                .containsExactly("需要向量化的消息");
     }
 
     /**
