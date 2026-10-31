@@ -2,7 +2,9 @@ package com.czx.qqmessageassistantjava.retrieval;
 
 import com.czx.qqmessageassistantjava.embedding.EmbeddingIndex;
 import com.czx.qqmessageassistantjava.embedding.EmbeddingService;
+import com.czx.qqmessageassistantjava.entity.FileTask;
 import com.czx.qqmessageassistantjava.entity.Memo;
+import com.czx.qqmessageassistantjava.entity.MemoryNote;
 import com.czx.qqmessageassistantjava.entity.MessageLog;
 import com.czx.qqmessageassistantjava.mapper.FileTaskMapper;
 import com.czx.qqmessageassistantjava.mapper.MemoMapper;
@@ -20,10 +22,13 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -67,9 +72,18 @@ class RetrievalServiceTest {
 
         private volatile boolean available;
         private final Map<String, float[]> vectors = new ConcurrentHashMap<>();
+        private final AtomicInteger embedCalls = new AtomicInteger();
 
         void setAvailable(boolean available) {
             this.available = available;
+        }
+
+        int embedCalls() {
+            return embedCalls.get();
+        }
+
+        void resetEmbedCalls() {
+            embedCalls.set(0);
         }
 
         void put(String text, float[] vector) {
@@ -96,6 +110,7 @@ class RetrievalServiceTest {
 
         @Override
         public float[] embed(String text) {
+            embedCalls.incrementAndGet();
             if (!available) {
                 throw new IllegalStateException("fake embedding unavailable");
             }
@@ -141,12 +156,16 @@ class RetrievalServiceTest {
     private MemoMapper memoMapper;
 
     @Autowired
+    private MemoryNoteMapper memoryNoteMapper;
+
+    @Autowired
     private FileTaskMapper fileTaskMapper;
 
     @BeforeEach
     void resetState() {
         index.reset();
         fake.setAvailable(false);
+        fake.resetEmbedCalls();
     }
 
     @Test
@@ -214,9 +233,10 @@ class RetrievalServiceTest {
         fake.put("q1", basis(0));
         fake.put("q2", basis(1));
         fake.put("q3", basis(2));
+        fake.put("q4", basis(3));
 
         var plan = new QueryPlan(Set.of(), List.of(), List.of(),
-                List.of("q1", "q2", "q3"), null, null);
+                List.of("q1", "q2", "q3", "q4"), null, null);
 
         var result = service.retrieve(plan, Set.of());
 
@@ -224,6 +244,8 @@ class RetrievalServiceTest {
                 .map(Candidate::key).toList();
         assertThat(keys).isNotEmpty();
         assertThat(keys.get(0)).isEqualTo("msg:" + target);
+        // 第 4 条 query 不参与语义通道：只 embed 前 3 条
+        assertThat(fake.embedCalls()).isEqualTo(3);
     }
 
     @Test
@@ -347,6 +369,160 @@ class RetrievalServiceTest {
                 .extracting(Candidate::key)
                 .contains("msg:" + fresh)
                 .doesNotContain("msg:" + seen);
+    }
+
+    /**
+     * 第二轮会把第一轮见过的 key 全部排除。若先按 SQL LIMIT 取最新 30 条再过滤，
+     * 这 30 条恰好都被排除时该路会「跑了但为空」，更旧的未命中候选永远拿不到。
+     * file 通道上限 30：塞 35 条、排除最新的 30 条，最旧的 5 条必须仍在。
+     */
+    @Test
+    void exclude_keys_beyond_channel_limit_are_still_retrieved() {
+        List<Long> ids = new ArrayList<>();
+        try {
+            for (int i = 0; i < 35; i++) {
+                FileTask file = new FileTask();
+                file.setTaskRef("retrieval-overfetch-" + i);
+                file.setSenderId(603L);
+                file.setFileName("批量文件关键词-" + i + ".xlsx");
+                file.setStatus("PENDING");
+                file.setCreatedAt(AT.plusMinutes(i));
+                fileTaskMapper.insert(file);
+                ids.add(file.getId());
+            }
+
+            Set<String> excluded = new HashSet<>();
+            for (int i = 5; i < 35; i++) {
+                excluded.add("file:" + ids.get(i));
+            }
+
+            var plan = new QueryPlan(Set.of(), List.of(), List.of("批量文件关键词"),
+                    List.of(), null, null);
+
+            var result = service.retrieve(plan, excluded);
+
+            List<String> keys = result.hits().get(Channel.FILE).stream()
+                    .map(Candidate::key).toList();
+            assertThat(keys).hasSize(5);
+            for (int i = 0; i < 5; i++) {
+                assertThat(keys).contains("file:" + ids.get(i));
+            }
+        } finally {
+            for (Long id : ids) {
+                fileTaskMapper.deleteById(id);
+            }
+        }
+    }
+
+    /**
+     * FULLTEXT 同分时原来没有 tie-breaker，返回顺序不确定，RRF 名次与证据顺序会抖。
+     * 两条正文完全相同的消息，按 id 倒序应让后插入（id 大）的那条排在前面。
+     */
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void fulltext_ties_break_by_id_desc() {
+        long lower = 9_930_801L;
+        long higher = 9_930_802L;
+        messageLogMapper.deleteById(lower);
+        messageLogMapper.deleteById(higher);
+        try {
+            insertMessage(lower, 9_930_800L, "同分群", 801L, "小明", "同分测试内容", AT);
+            insertMessage(higher, 9_930_800L, "同分群", 801L, "小明", "同分测试内容", AT);
+
+            var plan = new QueryPlan(Set.of(), List.of(), List.of(),
+                    List.of("同分测试内容"), null, null);
+
+            var result = service.retrieve(plan, Set.of());
+
+            assertThat(result.hits().get(Channel.MSG_LEXICAL))
+                    .extracting(Candidate::key)
+                    .containsExactly("msg:" + higher, "msg:" + lower);
+        } finally {
+            messageLogMapper.deleteById(lower);
+            messageLogMapper.deleteById(higher);
+        }
+    }
+
+    /**
+     * 结构化通道按时间倒序（spec §7.4），不是按自增 id。
+     * 先插「新」再插「旧」：id DESC 会把旧的排前面，只有 created_at DESC 能让新的第一。
+     */
+    @Test
+    void structured_channels_order_by_created_at_desc() {
+        Memo newerMemo = insertMemo("排序关键词备忘新", LocalDateTime.of(2026, 10, 2, 10, 0));
+        Memo olderMemo = insertMemo("排序关键词备忘旧", LocalDateTime.of(2026, 10, 1, 10, 0));
+        FileTask newerFile = insertFile("排序关键词文件新.xlsx", LocalDateTime.of(2026, 10, 2, 10, 0));
+        FileTask olderFile = insertFile("排序关键词文件旧.xlsx", LocalDateTime.of(2026, 10, 1, 10, 0));
+        MemoryNote newerNote = insertNote("排序关键词事实新", LocalDateTime.of(2026, 10, 2, 10, 0));
+        MemoryNote olderNote = insertNote("排序关键词事实旧", LocalDateTime.of(2026, 10, 1, 10, 0));
+        try {
+            var plan = new QueryPlan(Set.of(), List.of(), List.of("排序关键词"),
+                    List.of(), null, null);
+
+            var result = service.retrieve(plan, Set.of());
+
+            assertThat(result.hits().get(Channel.MEMO).get(0).key())
+                    .isEqualTo("memo:" + newerMemo.getId());
+            assertThat(result.hits().get(Channel.FILE).get(0).key())
+                    .isEqualTo("file:" + newerFile.getId());
+            assertThat(result.hits().get(Channel.NOTE).get(0).key())
+                    .isEqualTo("note:" + newerNote.getId());
+        } finally {
+            memoMapper.deleteById(newerMemo.getId());
+            memoMapper.deleteById(olderMemo.getId());
+            fileTaskMapper.deleteById(newerFile.getId());
+            fileTaskMapper.deleteById(olderFile.getId());
+            memoryNoteMapper.deleteById(newerNote.getId());
+            memoryNoteMapper.deleteById(olderNote.getId());
+        }
+    }
+
+    /** 跑了的通道必须出现，即使输入为空、命中为 0；只有没跑的通道才缺席。 */
+    @Test
+    void empty_inputs_keep_channels_present_with_empty_lists() {
+        fake.setAvailable(true);
+
+        var plan = new QueryPlan(Set.of(), List.of(), List.of(), List.of(), null, null);
+
+        var result = service.retrieve(plan, Set.of());
+
+        assertThat(result.hits()).containsKeys(Channel.values());
+        for (Channel channel : Channel.values()) {
+            assertThat(result.hits().get(channel)).isEmpty();
+        }
+    }
+
+    private Memo insertMemo(String title, LocalDateTime createdAt) {
+        Memo memo = new Memo();
+        memo.setSenderId(601L);
+        memo.setTitle(title);
+        memo.setContent(title);
+        memo.setImportance(3);
+        memo.setStatus("ACTIVE");
+        memo.setCreatedAt(createdAt);
+        memoMapper.insert(memo);
+        return memo;
+    }
+
+    private FileTask insertFile(String fileName, LocalDateTime createdAt) {
+        FileTask file = new FileTask();
+        file.setTaskRef("retrieval-order-" + System.nanoTime());
+        file.setSenderId(602L);
+        file.setFileName(fileName);
+        file.setStatus("PENDING");
+        file.setCreatedAt(createdAt);
+        fileTaskMapper.insert(file);
+        return file;
+    }
+
+    private MemoryNote insertNote(String value, LocalDateTime createdAt) {
+        MemoryNote note = new MemoryNote();
+        note.setPredicate("测试");
+        note.setValue(value);
+        note.setSourceMsgIds("0");
+        note.setCreatedAt(createdAt);
+        memoryNoteMapper.insert(note);
+        return note;
     }
 
     private void insertMessage(long id, Long chatId, String chatName, long senderId, String senderName,

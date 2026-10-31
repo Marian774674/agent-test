@@ -34,7 +34,7 @@ public interface MemoMapper extends BaseMapper<Memo> {
             + "(title LIKE CONCAT('%', #{kw}, '%') ESCAPE '\\\\' "
             + "OR content LIKE CONCAT('%', #{kw}, '%') ESCAPE '\\\\')"
             + "</foreach>) "
-            + "ORDER BY id DESC LIMIT #{limit}"
+            + "ORDER BY created_at DESC, id DESC LIMIT #{limit}"
             + "</script>")
     List<Memo> searchByKeywordsEscaped(@Param("keywords") List<String> keywords,
                                        @Param("limit") int limit);

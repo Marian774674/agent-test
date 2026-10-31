@@ -39,7 +39,7 @@ public interface MessageLogMapper extends BaseMapper<MessageLog> {
      */
     @Select("SELECT * FROM message_log "
             + "WHERE MATCH(content) AGAINST(#{q} IN NATURAL LANGUAGE MODE) "
-            + "ORDER BY MATCH(content) AGAINST(#{q} IN NATURAL LANGUAGE MODE) DESC "
+            + "ORDER BY MATCH(content) AGAINST(#{q} IN NATURAL LANGUAGE MODE) DESC, id DESC "
             + "LIMIT #{limit}")
     List<MessageLog> searchFulltext(@Param("q") String q, @Param("limit") int limit);
 

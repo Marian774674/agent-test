@@ -33,7 +33,7 @@ public interface FileTaskMapper extends BaseMapper<FileTask> {
             + "<foreach collection=\"keywords\" item=\"kw\" separator=\" OR \">"
             + "file_name LIKE CONCAT('%', #{kw}, '%') ESCAPE '\\\\'"
             + "</foreach> "
-            + "ORDER BY id DESC LIMIT #{limit}"
+            + "ORDER BY created_at DESC, id DESC LIMIT #{limit}"
             + "</script>")
     List<FileTask> searchByKeywordsEscaped(@Param("keywords") List<String> keywords,
                                            @Param("limit") int limit);

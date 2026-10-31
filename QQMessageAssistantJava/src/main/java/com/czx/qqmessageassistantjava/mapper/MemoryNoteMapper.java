@@ -37,7 +37,7 @@ public interface MemoryNoteMapper extends BaseMapper<MemoryNote> {
             + "(`value` LIKE CONCAT('%', #{kw}, '%') ESCAPE '\\\\' "
             + "OR `predicate` LIKE CONCAT('%', #{kw}, '%') ESCAPE '\\\\')"
             + "</foreach> "
-            + "ORDER BY id DESC LIMIT #{limit}"
+            + "ORDER BY created_at DESC, id DESC LIMIT #{limit}"
             + "</script>")
     List<MemoryNote> searchByKeywordsEscaped(@Param("keywords") List<String> keywords,
                                              @Param("limit") int limit);
@@ -53,7 +53,7 @@ public interface MemoryNoteMapper extends BaseMapper<MemoryNote> {
     @Select("<script>SELECT * FROM memory_note WHERE subject_sender_id IN "
             + "<foreach collection=\"subjects\" item=\"sid\" open=\"(\" separator=\",\" close=\")\">"
             + "#{sid}</foreach> "
-            + "ORDER BY id DESC LIMIT #{limit}</script>")
+            + "ORDER BY created_at DESC, id DESC LIMIT #{limit}</script>")
     List<MemoryNote> selectBySubjectsIn(@Param("subjects") Collection<Long> subjects,
                                         @Param("limit") int limit);
 }

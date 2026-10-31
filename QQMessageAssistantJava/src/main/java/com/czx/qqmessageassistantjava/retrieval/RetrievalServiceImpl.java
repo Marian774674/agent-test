@@ -23,6 +23,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
@@ -61,6 +62,12 @@ public class RetrievalServiceImpl implements RetrievalService {
 
     /** 证据原文的截断长度。 */
     static final int QUOTE_LIMIT = 200;
+
+    /**
+     * 为「排除已有候选」而超额取数的硬上限。多轮时 {@code excludeKeys} 可能很大，
+     * 但不能因此把整张表拉进内存。
+     */
+    static final int MAX_FETCH_LIMIT = 2000;
 
     private final MemoryNoteMapper memoryNoteMapper;
     private final MessageLogMapper messageLogMapper;
@@ -133,22 +140,16 @@ public class RetrievalServiceImpl implements RetrievalService {
         Set<String> seen = new HashSet<>();
 
         if (!plan.subjects().isEmpty()) {
-            List<MemoryNote> bySubject = memoryNoteMapper.selectBySubjects(
-                    plan.subjects(), NOTE_SUBJECT_LIMIT);
-            if (bySubject != null) {
-                for (MemoryNote note : bySubject) {
-                    add(out, seen, excluded, noteCandidate(note));
-                }
-            }
+            append(out, seen, excluded,
+                    memoryNoteMapper.selectBySubjects(
+                            plan.subjects(), fetchLimit(NOTE_SUBJECT_LIMIT, excluded)),
+                    this::noteCandidate, NOTE_SUBJECT_LIMIT, true);
         }
         if (!plan.keywords().isEmpty()) {
-            List<MemoryNote> byKeyword = memoryNoteMapper.searchByKeywords(
-                    plan.keywords(), NOTE_KEYWORD_LIMIT);
-            if (byKeyword != null) {
-                for (MemoryNote note : byKeyword) {
-                    add(out, seen, excluded, noteCandidate(note));
-                }
-            }
+            append(out, seen, excluded,
+                    memoryNoteMapper.searchByKeywords(
+                            plan.keywords(), fetchLimit(NOTE_KEYWORD_LIMIT, excluded)),
+                    this::noteCandidate, NOTE_KEYWORD_LIMIT, true);
         }
         return out;
     }
@@ -159,51 +160,52 @@ public class RetrievalServiceImpl implements RetrievalService {
             return List.of();
         }
         List<Candidate> out = new ArrayList<>();
-        Set<String> seen = new HashSet<>();
-        List<MessageLog> rows = messageLogMapper.selectBySenders(
-                plan.subjects(), MSG_PERSON_LIMIT);
-        if (rows != null) {
-            for (MessageLog row : rows) {
-                add(out, seen, excluded, messageCandidate(row));
-            }
-        }
+        append(out, new HashSet<>(), excluded,
+                messageLogMapper.selectBySenders(
+                        plan.subjects(), fetchLimit(MSG_PERSON_LIMIT, excluded)),
+                this::messageCandidate, MSG_PERSON_LIMIT, true);
         return out;
     }
 
-    /** msg-mention：每个 entity 走一次全文，结果顺序拼接，同一消息只留首次。 */
+    /**
+     * msg-mention：每个 entity 走一次全文，结果顺序拼接。
+     *
+     * <p><b>不去重</b>：spec §7.3 的计数口径是「按查询串累加、去重前」，
+     * 同一个 key 被多个 alias 命中就该计多次；RRF 的 {@code collectScores}
+     * 自会按通道内最佳名次处理重复。
+     */
     private List<Candidate> mentionChannel(QueryPlan plan, Set<String> excluded) {
         List<Candidate> out = new ArrayList<>();
-        Set<String> seen = new HashSet<>();
         for (String entity : plan.entities()) {
             if (isBlank(entity)) {
                 continue;
             }
-            List<MessageLog> rows = messageLogMapper.searchFulltext(
-                    entity.trim(), MSG_MENTION_LIMIT);
-            if (rows != null) {
-                for (MessageLog row : rows) {
-                    add(out, seen, excluded, messageCandidate(row));
-                }
-            }
+            List<Candidate> batch = new ArrayList<>();
+            append(batch, new HashSet<>(), excluded,
+                    messageLogMapper.searchFulltext(
+                            entity.trim(), fetchLimit(MSG_MENTION_LIMIT, excluded)),
+                    this::messageCandidate, MSG_MENTION_LIMIT, false);
+            out.addAll(batch);
         }
         return out;
     }
 
-    /** msg-lexical：每条 query 各 ≤100，结果顺序拼接。 */
+    /**
+     * msg-lexical：每条 query 各 ≤100，结果顺序拼接。
+     * 与 mention 同理不去重——计数要保留「按查询串累加」的原始命中数。
+     */
     private List<Candidate> lexicalChannel(QueryPlan plan, Set<String> excluded) {
         List<Candidate> out = new ArrayList<>();
-        Set<String> seen = new HashSet<>();
         for (String query : plan.queries()) {
             if (isBlank(query)) {
                 continue;
             }
-            List<MessageLog> rows = messageLogMapper.searchFulltext(
-                    query.trim(), MSG_LEXICAL_LIMIT);
-            if (rows != null) {
-                for (MessageLog row : rows) {
-                    add(out, seen, excluded, messageCandidate(row));
-                }
-            }
+            List<Candidate> batch = new ArrayList<>();
+            append(batch, new HashSet<>(), excluded,
+                    messageLogMapper.searchFulltext(
+                            query.trim(), fetchLimit(MSG_LEXICAL_LIMIT, excluded)),
+                    this::messageCandidate, MSG_LEXICAL_LIMIT, false);
+            out.addAll(batch);
         }
         return out;
     }
@@ -228,8 +230,9 @@ public class RetrievalServiceImpl implements RetrievalService {
             return List.of();
         }
 
+        // 超额取数：已见候选可能占满 top-100，过滤后还要能凑够 100 条新的
         List<EmbeddingIndex.ScoredId> scored = embeddingIndex.search(
-                queryVector, MSG_SEMANTIC_LIMIT);
+                queryVector, fetchLimit(MSG_SEMANTIC_LIMIT, excluded));
         if (scored == null || scored.isEmpty()) {
             return List.of();
         }
@@ -249,11 +252,19 @@ public class RetrievalServiceImpl implements RetrievalService {
         List<Candidate> out = new ArrayList<>();
         Set<String> seen = new HashSet<>();
         for (EmbeddingIndex.ScoredId hit : scored) {
+            if (out.size() >= MSG_SEMANTIC_LIMIT) {
+                break;
+            }
             MessageLog row = byId.get(hit.messageId());
             if (row == null || isBlank(row.getContent())) {
                 continue;
             }
-            add(out, seen, excluded, messageCandidate(row));
+            Candidate candidate = messageCandidate(row);
+            String key = candidate.key();
+            if (excluded.contains(key) || !seen.add(key)) {
+                continue;
+            }
+            out.add(candidate);
         }
         return out;
     }
@@ -264,21 +275,9 @@ public class RetrievalServiceImpl implements RetrievalService {
             return List.of();
         }
         List<Candidate> out = new ArrayList<>();
-        Set<String> seen = new HashSet<>();
-        List<Memo> rows = memoMapper.searchByKeywords(plan.keywords(), MEMO_LIMIT);
-        if (rows != null) {
-            for (Memo memo : rows) {
-                String content = truncate(flatten(memo.getContent()), QUOTE_LIMIT);
-                add(out, seen, excluded, new Candidate(
-                        "memo",
-                        memo.getId(),
-                        "备忘 · " + nullToEmpty(memo.getTitle()),
-                        content,
-                        memo.getCreatedAt(),
-                        null,
-                        content));
-            }
-        }
+        append(out, new HashSet<>(), excluded,
+                memoMapper.searchByKeywords(plan.keywords(), fetchLimit(MEMO_LIMIT, excluded)),
+                this::memoCandidate, MEMO_LIMIT, true);
         return out;
     }
 
@@ -288,21 +287,9 @@ public class RetrievalServiceImpl implements RetrievalService {
             return List.of();
         }
         List<Candidate> out = new ArrayList<>();
-        Set<String> seen = new HashSet<>();
-        List<FileTask> rows = fileTaskMapper.searchByKeywords(plan.keywords(), FILE_LIMIT);
-        if (rows != null) {
-            for (FileTask file : rows) {
-                String content = truncate(flatten(file.getRequest()), QUOTE_LIMIT);
-                add(out, seen, excluded, new Candidate(
-                        "file",
-                        file.getId(),
-                        "文件 · " + nullToEmpty(file.getFileName()),
-                        content,
-                        file.getCreatedAt(),
-                        null,
-                        content));
-            }
-        }
+        append(out, new HashSet<>(), excluded,
+                fileTaskMapper.searchByKeywords(plan.keywords(), fetchLimit(FILE_LIMIT, excluded)),
+                this::fileCandidate, FILE_LIMIT, true);
         return out;
     }
 
@@ -377,16 +364,66 @@ public class RetrievalServiceImpl implements RetrievalService {
                 content);
     }
 
-    private void add(List<Candidate> out, Set<String> seen, Set<String> excluded,
-                     Candidate candidate) {
-        if (candidate == null || candidate.id() <= 0) {
+    private Candidate memoCandidate(Memo memo) {
+        String content = truncate(flatten(memo.getContent()), QUOTE_LIMIT);
+        return new Candidate(
+                "memo",
+                memo.getId(),
+                "备忘 · " + nullToEmpty(memo.getTitle()),
+                content,
+                memo.getCreatedAt(),
+                null,
+                content);
+    }
+
+    private Candidate fileCandidate(FileTask file) {
+        String content = truncate(flatten(file.getRequest()), QUOTE_LIMIT);
+        return new Candidate(
+                "file",
+                file.getId(),
+                "文件 · " + nullToEmpty(file.getFileName()),
+                content,
+                file.getCreatedAt(),
+                null,
+                content);
+    }
+
+    /** 超额取数上限：通道上限 + 已见候选数，封顶 {@link #MAX_FETCH_LIMIT}。 */
+    private static int fetchLimit(int channelLimit, Set<String> excluded) {
+        long wanted = (long) channelLimit + (excluded == null ? 0 : excluded.size());
+        return (int) Math.min(wanted, MAX_FETCH_LIMIT);
+    }
+
+    /**
+     * 过滤 excluded、按需去重，并在<b>过滤之后</b>按通道上限截断。
+     * 必须先超额取数再截断：否则上一轮见过的候选占满 SQL LIMIT 时，
+     * 这一轮会误报「通道跑了但为空」，更旧的未命中候选永远取不到。
+     */
+    private <T> void append(List<Candidate> out, Set<String> seen, Set<String> excluded,
+                            List<T> rows, Function<T, Candidate> mapper,
+                            int limit, boolean dedupe) {
+        if (rows == null) {
             return;
         }
-        String key = candidate.key();
-        if (excluded.contains(key) || !seen.add(key)) {
-            return;
+        int added = 0;
+        for (T row : rows) {
+            if (added >= limit) {
+                break;
+            }
+            Candidate candidate = mapper.apply(row);
+            if (candidate == null || candidate.id() <= 0) {
+                continue;
+            }
+            String key = candidate.key();
+            if (excluded.contains(key)) {
+                continue;
+            }
+            if (dedupe && !seen.add(key)) {
+                continue;
+            }
+            out.add(candidate);
+            added++;
         }
-        out.add(candidate);
     }
 
     private static boolean isBlank(String value) {
