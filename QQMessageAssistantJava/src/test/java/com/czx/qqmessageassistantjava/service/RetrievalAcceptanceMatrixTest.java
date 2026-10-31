@@ -79,50 +79,61 @@ class RetrievalAcceptanceMatrixTest {
 
     private static final int DIM = 512;
 
-    private static final long FIRST_ID = 9_940_100L;
-    private static final long LAST_ID = 9_940_179L;
+    private static final long FIRST_ID = 9_970_100L;
+    private static final long LAST_ID = 9_970_179L;
 
     /** 行 1：只在「小红私聊」出现的生日。 */
-    private static final long ROW1_ID = 9_940_100L;
+    private static final long ROW1_ID = 9_970_100L;
     /** 行 2：用「他 11 号生日」复述同一事实。 */
-    private static final long ROW2_ID = 9_940_101L;
-    /** 行 3：41 条同分消息里 id 最小（=全文排序最后）、时间最旧的一条。 */
-    private static final long OLD_TARGET_ID = 9_940_102L;
-    private static final long PROJECT_FIRST_ID = 9_940_103L;
-    private static final long PROJECT_LAST_ID = 9_940_142L;
+    private static final long ROW2_ID = 9_970_101L;
+    /** 行 3 之外的填充消息（102–142）。 */
+    private static final long PROJECT_FIRST_ID = 9_970_102L;
+    private static final long PROJECT_LAST_ID = 9_970_142L;
+    /**
+     * 行 3 专用语料（独立 ID 空间，不占用 6 会话 / 80 条基础夹具）：
+     * 110 条正文完全相同，全文同分时按 id DESC 排名。
+     * 第 60 名 = {@link #LEXICAL_RANK_60_ID}；第 102 名 = {@link #LEXICAL_BEYOND_CAP_ID}
+     * （超出 {@code MSG_LEXICAL_LIMIT=100}）。
+     */
+    private static final long LEXICAL_CORPUS_FIRST_ID = 9_971_000L;
+    private static final long LEXICAL_CORPUS_LAST_ID = 9_971_109L;
+    private static final long LEXICAL_RANK_60_ID = 9_971_050L;
+    private static final long LEXICAL_BEYOND_CAP_ID = 9_971_008L;
+    private static final int MSG_LEXICAL_CAP = 100;
+    private static final String LEXICAL_CORPUS_TOKEN = "分页边界测试词";
     /** 行 4/14：两跳。 */
-    private static final long TWO_HOP_A_ID = 9_940_143L;
-    private static final long TWO_HOP_B_ID = 9_940_144L;
+    private static final long TWO_HOP_A_ID = 9_970_143L;
+    private static final long TWO_HOP_B_ID = 9_970_144L;
     /** 行 12：未知称呼出现 3 次。 */
-    private static final long UNKNOWN_OCCURRENCE_1 = 9_940_145L;
-    private static final long UNKNOWN_OCCURRENCE_2 = 9_940_146L;
-    private static final long UNKNOWN_OCCURRENCE_3 = 9_940_147L;
+    private static final long UNKNOWN_OCCURRENCE_1 = 9_970_145L;
+    private static final long UNKNOWN_OCCURRENCE_2 = 9_970_146L;
+    private static final long UNKNOWN_OCCURRENCE_3 = 9_970_147L;
     /** 行 5：记录里出现但不在 contact。 */
-    private static final long IDIOT_ID = 9_940_148L;
+    private static final long IDIOT_ID = 9_970_148L;
     /** 行 9：语义关闭后仍靠词法命中。 */
-    private static final long LEXICAL_ONLY_ID = 9_940_149L;
+    private static final long LEXICAL_ONLY_ID = 9_970_149L;
     /** 行 10：resolve 失败后按原问题检索。 */
-    private static final long RESOLVE_FALLBACK_ID = 9_940_150L;
+    private static final long RESOLVE_FALLBACK_ID = 9_970_150L;
     /** 行 8：检索前才补索引的新消息。 */
-    private static final long NEW_INDEX_ID = 9_940_151L;
+    private static final long NEW_INDEX_ID = 9_970_151L;
     /** 行 15：区间内 / 区间外。 */
-    private static final long TIME_IN_ID = 9_940_152L;
-    private static final long TIME_OUT_ID = 9_940_153L;
+    private static final long TIME_IN_ID = 9_970_152L;
+    private static final long TIME_OUT_ID = 9_970_153L;
     /** 行 16：只有「三条 query 的平均向量」才能命中的构造用例。 */
-    private static final long AVERAGE_TARGET_ID = 9_940_154L;
-    private static final long AVERAGE_DISTRACTOR_ID = 9_940_155L;
+    private static final long AVERAGE_TARGET_ID = 9_970_154L;
+    private static final long AVERAGE_DISTRACTOR_ID = 9_970_155L;
 
-    private static final long XIAOHONG = 9_940_001L;
-    private static final long XIAOMING = 9_940_002L;
-    private static final long XUEBA = 9_940_003L;
-    private static final long LAOWANG = 9_940_004L;
-    private static final long MAMA = 9_940_005L;
-    private static final long DUPLICATE_A = 9_940_020L;
-    private static final long DUPLICATE_B = 9_940_021L;
+    private static final long XIAOHONG = 9_970_001L;
+    private static final long XIAOMING = 9_970_002L;
+    private static final long XUEBA = 9_970_003L;
+    private static final long LAOWANG = 9_970_004L;
+    private static final long MAMA = 9_970_005L;
+    private static final long DUPLICATE_A = 9_970_020L;
+    private static final long DUPLICATE_B = 9_970_021L;
 
-    private static final long GROUP_THREE = 9_940_101L;
-    private static final long GROUP_OLD_FRIENDS = 9_940_102L;
-    private static final long GROUP_FAMILY = 9_940_103L;
+    private static final long GROUP_THREE = 9_970_101L;
+    private static final long GROUP_OLD_FRIENDS = 9_970_102L;
+    private static final long GROUP_FAMILY = 9_970_103L;
 
     private static final String ALIAS_XIAOMING = "小明甲";
     private static final String ALIAS_XUEBA = "学霸乙";
@@ -132,6 +143,9 @@ class RetrievalAcceptanceMatrixTest {
     private static final String ALIAS_DUPLICATE = "重名庚";
 
     private static final String QUESTION_PREFIX = "MX14-";
+    /** 清理只认自己的标记，不按裸 ID 区间删别人的行。 */
+    private static final String MESSAGE_MARKER = "mx14-seed-";
+    private static final String ROW3_MARKER = "mx14-r3-";
     private static final String RESOLVE_FALLBACK_QUESTION = "回退检索关键词戊己";
     private static final String GIBBERISH = "zzqxvbnm14";
 
@@ -377,36 +391,50 @@ class RetrievalAcceptanceMatrixTest {
     }
 
     /**
-     * 行 3：很旧的消息（41 条同分全文命中里 id 最小、排在最后）仍被命中 → 没有 30 条硬顶。
+     * 行 3：30 条窗口之外的旧消息仍在召回范围内——但召回上限就是通道上限本身。
      *
-     * <p>字面意义上的「排在 1 万条之前」无法在 80 条夹具里复现；这里用同一全文查询命中
-     * 41 条、目标在全文排序第 41 位来验证「超过 30 位仍可取回」。
+     * <p>spec 的「排在 1 万条之前」按字面无法构造：§7 明确 msg-lexical 上限 100、
+     * msg-person 上限 200，1 万条不会被任何一路取回。这里改为把目标放在
+     * 110 条同分全文命中的第 60 名（旧的 30 条窗口之外、仍在通道上限内），
+     * 同时把另一条放在第 102 名（超出上限）断言其缺席：
+     * 上限降到 50 时目标消失，升到 100 以上时第 102 名出现，两个方向都会失败。
      * 通道级用例见 {@code RetrievalServiceTest#old_message_beyond_thirty_is_retrieved}。
      */
     @Test
-    void row03_old_message_beyond_thirty_is_not_capped() {
-        QueryPlan plan = new QueryPlan(Set.of(), List.of(), List.of(),
-                List.of("项目进度"), null, null);
+    void row03_old_message_outside_thirty_window_is_retrieved_up_to_channel_cap() {
+        seedLexicalCorpus();
+        try {
+            QueryPlan plan = new QueryPlan(Set.of(), List.of(), List.of(),
+                    List.of(LEXICAL_CORPUS_TOKEN), null, null);
 
-        List<Candidate> lexical = retrievalService.retrieve(plan, Set.of())
-                .hits().get(Channel.MSG_LEXICAL);
+            List<Candidate> lexical = retrievalService.retrieve(plan, Set.of())
+                    .hits().get(Channel.MSG_LEXICAL);
 
-        assertThat(lexical).isNotNull();
-        List<String> keys = lexical.stream().map(Candidate::key).toList();
-        assertThat(keys).contains("msg:" + OLD_TARGET_ID);
-        assertThat(keys.indexOf("msg:" + OLD_TARGET_ID))
-                .as("同分时 id DESC，目标 id 最小，应排在 30 位之后")
-                .isGreaterThanOrEqualTo(30);
-        assertThat(lexical).hasSize(41);
+            assertThat(lexical).isNotNull();
+            List<String> keys = lexical.stream().map(Candidate::key).toList();
+            // 同分时 id DESC：110 条里第 60 名在 0-based 下标 59
+            assertThat(lexical).hasSize(MSG_LEXICAL_CAP);
+            assertThat(keys).contains("msg:" + LEXICAL_RANK_60_ID);
+            assertThat(keys.indexOf("msg:" + LEXICAL_RANK_60_ID))
+                    .as("目标在旧的 30 条窗口之外，但仍在通道上限内")
+                    .isEqualTo(59);
+            assertThat(keys).doesNotContain("msg:" + LEXICAL_BEYOND_CAP_ID);
 
-        stubStages(resolve(List.of(), List.of(), List.of("项目进度")),
-                List.of(answer("旧消息仍然可以找到", List.of("msg:" + OLD_TARGET_ID))),
-                List.of());
-        AskResponse response = askService.ask(question("项目进度"));
+            stubStages(resolve(List.of(), List.of(), List.of(LEXICAL_CORPUS_TOKEN)),
+                    List.of(answer("旧消息仍然可以找到", List.of("msg:" + LEXICAL_RANK_60_ID))),
+                    List.of());
+            AskResponse response = askService.ask(question(LEXICAL_CORPUS_TOKEN));
 
-        assertThat(response.getEvidence()).extracting(EvidenceVO::getId)
-                .contains(String.valueOf(OLD_TARGET_ID));
-        assertThat(response.getScope().getChannels().get("msg-lexical")).isGreaterThanOrEqualTo(41);
+            assertThat(response.getAnswer()).isNotEmpty();
+            assertThat(response.getEvidence()).extracting(EvidenceVO::getId)
+                    .contains(String.valueOf(LEXICAL_RANK_60_ID));
+            String rendered = String.valueOf(
+                    stageInputs(capturedInputs(), "answer").get(0).get("candidates"));
+            assertThat(rendered).contains("msg:" + LEXICAL_RANK_60_ID);
+            assertThat(rendered).doesNotContain("msg:" + LEXICAL_BEYOND_CAP_ID);
+        } finally {
+            cleanLexicalCorpus();
+        }
     }
 
     /**
@@ -498,6 +526,11 @@ class RetrievalAcceptanceMatrixTest {
      * <p>测试 profile 把 {@code app.retrieval.pre-run-index-limit} 调成 3，是 500 的等价代理：
      * 这里让补跑只成功 1 条、status 报告 lag=1，验证 AskService 确实先补跑再读状态。
      * 索引任务本身的补跑逻辑见 {@code AskSingleRoundTest#new_messages_are_indexed_before_retrieval_and_lag_is_reported}。
+     *
+     * <p><b>scope.lag 这里是「映射」断言，不是「计算」断言</b>：{@code EmbeddingStatus} 是桩，
+     * 断言只证明 AskService 把 {@code status.lag()} 原样搬进 {@code AskScopeVO}。
+     * 真实 lag 公式由 {@code EmbeddingJobServiceTest#status_reports_lag} 覆盖；
+     * 本用例刻意不再套一层 mock-of-mock。
      */
     @Test
     void row08_new_message_is_indexed_before_retrieval_and_lag_reported() {
@@ -515,7 +548,8 @@ class RetrievalAcceptanceMatrixTest {
         AskResponse response = askService.ask(question("补索引测试消息"));
 
         assertThat(response.getScope().getSemantic()).isTrue();
-        assertThat(response.getScope().getLag()).isGreaterThan(0);
+        // 桩里 status.lag()=1，scope 必须原样为 1（>0 满足 spec 行 8 的期望）
+        assertThat(response.getScope().getLag()).isEqualTo(1);
         assertThat(response.getScope().getChannels().get("msg-semantic")).isPositive();
         assertThat(response.getEvidence()).extracting(EvidenceVO::getId)
                 .contains(String.valueOf(NEW_INDEX_ID));
@@ -735,7 +769,7 @@ class RetrievalAcceptanceMatrixTest {
         rows.add(message(IDIOT_ID, null, null, XIAOHONG, "小红",
                 "阿呆丁下月搬家", at(2026, 10, 13, 20, 0)));
         for (int i = 0; i < 10; i++) {
-            rows.add(message(9_940_166L + i, null, null, XIAOHONG, "小红",
+            rows.add(message(9_970_166L + i, null, null, XIAOHONG, "小红",
                     "今天天气不错第" + i, at(2026, 10, 1, 9, i)));
         }
 
@@ -745,7 +779,7 @@ class RetrievalAcceptanceMatrixTest {
         rows.add(message(NEW_INDEX_ID, null, null, XIAOMING, "小明",
                 "补索引测试消息", at(2026, 10, 16, 20, 0)));
         for (int i = 0; i < 10; i++) {
-            rows.add(message(9_940_156L + i, null, null, XIAOMING, "小明",
+            rows.add(message(9_970_156L + i, null, null, XIAOMING, "小明",
                     "今天天气不错第" + i, at(2026, 10, 2, 9, i)));
         }
 
@@ -761,18 +795,16 @@ class RetrievalAcceptanceMatrixTest {
         rows.add(message(AVERAGE_DISTRACTOR_ID, GROUP_THREE, "三班群", XIAOHONG, "小红",
                 "平均向量测试干扰", at(2026, 10, 18, 20, 0)));
 
-        // 会话 4：学霸私聊（行 3 的 21 条同分全文命中；目标最旧、id 最小）
-        rows.add(message(OLD_TARGET_ID, null, null, XUEBA, "学霸",
-                "项目进度", at(2025, 1, 1, 0, 0)));
-        for (long id = PROJECT_FIRST_ID; id <= 9_940_122L; id++) {
+        // 会话 4：学霸私聊（填充消息；行 3 已改用 9_971_* 专用语料）
+        for (long id = PROJECT_FIRST_ID; id <= 9_970_122L; id++) {
             rows.add(message(id, null, null, XUEBA, "学霸",
                     "项目进度", at(2026, 6, 1, 0, (int) (id - PROJECT_FIRST_ID))));
         }
 
-        // 会话 5：老友群（行 3 的 10 条 + 两跳 B + 行 12 的 3 次出现）
-        for (long id = 9_940_123L; id <= 9_940_132L; id++) {
+        // 会话 5：老友群（填充 + 两跳 B + 行 12 的 3 次出现）
+        for (long id = 9_970_123L; id <= 9_970_132L; id++) {
             rows.add(message(id, GROUP_OLD_FRIENDS, "老友群", LAOWANG, "老王",
-                    "项目进度", at(2026, 6, 2, 0, (int) (id - 9_940_123L))));
+                    "项目进度", at(2026, 6, 2, 0, (int) (id - 9_970_123L))));
         }
         rows.add(message(TWO_HOP_B_ID, GROUP_OLD_FRIENDS, "老友群", XUEBA, "学霸",
                 "学霸乙叫李四", at(2026, 10, 11, 20, 0)));
@@ -783,17 +815,17 @@ class RetrievalAcceptanceMatrixTest {
         rows.add(message(UNKNOWN_OCCURRENCE_3, GROUP_OLD_FRIENDS, "老友群", LAOWANG, "老王",
                 "路人戊来过第3次", at(2026, 10, 12, 20, 2)));
 
-        // 会话 6：家庭群（行 3 的 10 条 + 行 15 的区间内外 + 填充）
-        for (long id = 9_940_133L; id <= PROJECT_LAST_ID; id++) {
+        // 会话 6：家庭群（填充 + 行 15 的区间内外）
+        for (long id = 9_970_133L; id <= PROJECT_LAST_ID; id++) {
             rows.add(message(id, GROUP_FAMILY, "家庭群", MAMA, "妈妈",
-                    "项目进度", at(2026, 6, 3, 0, (int) (id - 9_940_133L))));
+                    "项目进度", at(2026, 6, 3, 0, (int) (id - 9_970_133L))));
         }
         rows.add(message(TIME_IN_ID, GROUP_FAMILY, "家庭群", MAMA, "妈妈",
                 "时间分段安排甲", at(2026, 10, 20, 10, 0)));
         rows.add(message(TIME_OUT_ID, GROUP_FAMILY, "家庭群", MAMA, "妈妈",
                 "时间分段安排乙", at(2026, 9, 1, 10, 0)));
         for (int i = 0; i < 4; i++) {
-            rows.add(message(9_940_176L + i, GROUP_FAMILY, "家庭群", MAMA, "妈妈",
+            rows.add(message(9_970_176L + i, GROUP_FAMILY, "家庭群", MAMA, "妈妈",
                     "今天天气不错第" + i, at(2026, 10, 3, 9, i)));
         }
 
@@ -811,7 +843,7 @@ class RetrievalAcceptanceMatrixTest {
         row.setChatName(chatName);
         row.setConversationId("mx14-conv-" + id);
         row.setMessageId("mx14-msg-" + id);
-        row.setDedupeKey("mx14-seed-" + id);
+        row.setDedupeKey(MESSAGE_MARKER + id);
         row.setDirection("IN");
         row.setMsgType("text");
         row.setContent(content);
@@ -823,14 +855,55 @@ class RetrievalAcceptanceMatrixTest {
         return LocalDateTime.of(year, month, day, hour, minute);
     }
 
+    /**
+     * 行 3 专用语料：110 条正文完全相同，全文同分 → 名次由 id DESC 决定。
+     * 独立 ID 空间与 {@link #ROW3_MARKER} 标记，插入前先清掉上次可能残留的同标记行。
+     */
+    private void seedLexicalCorpus() {
+        cleanLexicalCorpus();
+        for (long id = LEXICAL_CORPUS_FIRST_ID; id <= LEXICAL_CORPUS_LAST_ID; id++) {
+            MessageLog row = new MessageLog();
+            row.setId(id);
+            row.setSenderId(XIAOHONG);
+            row.setSenderName("小红");
+            row.setConversationId("mx14-r3-conv-" + id);
+            row.setMessageId("mx14-r3-msg-" + id);
+            row.setDedupeKey(ROW3_MARKER + id);
+            row.setDirection("IN");
+            row.setMsgType("text");
+            row.setContent(LEXICAL_CORPUS_TOKEN);
+            row.setCreatedAt(id == LEXICAL_RANK_60_ID
+                    ? LocalDateTime.of(2025, 1, 1, 0, 0)
+                    : LocalDateTime.of(2026, 6, 1, 0, 0)
+                            .plusMinutes(id - LEXICAL_CORPUS_FIRST_ID));
+            messageLogMapper.insert(row);
+        }
+    }
+
+    private void cleanLexicalCorpus() {
+        messageLogMapper.delete(new LambdaQueryWrapper<MessageLog>()
+                .likeRight(MessageLog::getDedupeKey, ROW3_MARKER));
+    }
+
+    /**
+     * 只按本类自己的标记清理：消息按 dedupe_key 前缀，ask_trace 按 question 前缀，
+     * contact 按「insert 时的 (sender_id, alias) 精确对」——不按裸 ID 区间误删别人的行。
+     */
     private void cleanFixture() {
         messageLogMapper.delete(new LambdaQueryWrapper<MessageLog>()
-                .between(MessageLog::getId, FIRST_ID, LAST_ID));
+                .likeRight(MessageLog::getDedupeKey, MESSAGE_MARKER));
+        cleanLexicalCorpus();
         askTraceMapper.delete(new LambdaQueryWrapper<AskTrace>()
                 .likeRight(AskTrace::getQuestion, QUESTION_PREFIX));
+        removeContact(XIAOMING, ALIAS_XIAOMING);
+        removeContact(DUPLICATE_A, ALIAS_DUPLICATE);
+        removeContact(DUPLICATE_B, ALIAS_DUPLICATE);
+    }
+
+    private void removeContact(long senderId, String alias) {
         contactService.remove(new LambdaQueryWrapper<Contact>()
-                .in(Contact::getSenderId,
-                        List.of(XIAOMING, DUPLICATE_A, DUPLICATE_B)));
+                .eq(Contact::getSenderId, senderId)
+                .eq(Contact::getAlias, alias));
     }
 
     private void indexFixture() {
