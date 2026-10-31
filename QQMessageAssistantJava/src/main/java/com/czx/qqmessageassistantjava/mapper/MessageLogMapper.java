@@ -6,6 +6,7 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
+import java.util.Collection;
 import java.util.List;
 
 @Mapper
@@ -41,6 +42,20 @@ public interface MessageLogMapper extends BaseMapper<MessageLog> {
             + "ORDER BY MATCH(content) AGAINST(#{q} IN NATURAL LANGUAGE MODE) DESC "
             + "LIMIT #{limit}")
     List<MessageLog> searchFulltext(@Param("q") String q, @Param("limit") int limit);
+
+    /**
+     * 主体本人发的 IN 消息（{@code msg-person} 通道）：时间倒序，最多 {@code limit} 条。
+     *
+     * <p>这是唯一按发送人过滤的召回通道——其余通道都不带人物/会话条件，
+     * 否则「答案在别人嘴里、在别的会话里」就永远找不回来。
+     */
+    @Select("<script>SELECT * FROM message_log "
+            + "WHERE direction = 'IN' AND sender_id IN "
+            + "<foreach collection=\"senderIds\" item=\"sid\" open=\"(\" separator=\",\" close=\")\">"
+            + "#{sid}</foreach> "
+            + "ORDER BY created_at DESC, id DESC LIMIT #{limit}</script>")
+    List<MessageLog> selectBySenders(@Param("senderIds") Collection<Long> senderIds,
+                                     @Param("limit") int limit);
 
     /**
      * 某个称呼在 IN 消息正文里作为子串出现的行数（跨全部会话）。
