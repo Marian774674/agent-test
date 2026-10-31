@@ -44,8 +44,24 @@ class WordPieceTokenizerTest {
         assertThat(tokenizer.sepId()).isEqualTo(3);
         assertThat(tokenizer.unkId()).isEqualTo(1);
         assertThat(tokenizer.padId()).isEqualTo(0);
-        assertThat(tokenizer.vocabSize()).isEqualTo(15);
+        assertThat(tokenizer.vocabSize()).isEqualTo(16);
         assertThat(tokenizer.tokenId("日")).isEqualTo(7);
+    }
+
+    @Test
+    void latin_word_uses_continuation_piece() {
+        assertThat(tokenizer.encode("ab", 8))
+                .containsExactly(
+                        tokenizer.clsId(),
+                        tokenizer.tokenId("a"),
+                        tokenizer.tokenId("##b"),
+                        tokenizer.sepId());
+    }
+
+    @Test
+    void partially_segmentable_word_becomes_single_unk() {
+        assertThat(tokenizer.encode("abx", 8))
+                .containsExactly(tokenizer.clsId(), tokenizer.unkId(), tokenizer.sepId());
     }
 
     @Test

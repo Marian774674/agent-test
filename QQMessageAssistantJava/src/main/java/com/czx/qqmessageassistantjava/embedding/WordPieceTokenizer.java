@@ -166,6 +166,7 @@ public class WordPieceTokenizer {
             return;
         }
 
+        List<Integer> pieces = new ArrayList<>();
         int start = 0;
         while (start < length) {
             int end = length;
@@ -183,9 +184,10 @@ public class WordPieceTokenizer {
                 out.add(unkId);
                 return;
             }
-            out.add(vocab.get(piece));
+            pieces.add(vocab.get(piece));
             start = end;
         }
+        out.addAll(pieces);
     }
 
     private static boolean isWhitespace(int codePoint) {
