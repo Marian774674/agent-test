@@ -49,3 +49,16 @@ app:
     enabled: true
     scan-interval-ms: 60000
     batch-size: 50
+  embedding:
+    # 语义检索（design/intelligent_retrieval.md §4）。
+    # 模型文件不入库：先跑 QQMessageAssistantJava/scripts/fetch-embedding-model.sh。
+    # enabled=false 或模型缺失 → 语义通道关闭，其余检索照常，问答不受影响。
+    enabled: true
+    mode: local                 # local | http
+    model-dir: ./models/bge-small-zh-v1.5
+    model-id: bge-small-zh-v1.5
+    dim: 512
+    http:                       # mode=http 时的 OpenAI 兼容端点；api-key 只走环境变量
+      base-url: ${EMBEDDING_HTTP_BASE_URL:}
+      api-key: ${EMBEDDING_HTTP_API_KEY:}
+      model: ${EMBEDDING_HTTP_MODEL:}
