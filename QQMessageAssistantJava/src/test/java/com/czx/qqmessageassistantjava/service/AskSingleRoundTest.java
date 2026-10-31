@@ -300,7 +300,8 @@ class AskSingleRoundTest {
 
             assertThat(response.getAnswer()).isEmpty();
             ArgumentCaptor<Map<String, Object>> captor = ArgumentCaptor.forClass(Map.class);
-            verify(difyWorkflowClient, times(2)).run(eq("ask"), captor.capture());
+            // resolve（失败）+ 第 1 轮 answer + 答案为空后的 expand（无新词即结束）
+            verify(difyWorkflowClient, times(3)).run(eq("ask"), captor.capture());
             Map<String, Object> answerInputs = captor.getAllValues().get(1);
             assertThat(answerInputs.get("stage")).isEqualTo("answer");
             assertThat(String.valueOf(answerInputs.get("candidates"))).contains("msg:" + id);

@@ -19,7 +19,7 @@ public class AskScopeVO {
     /** 尚未建立向量的消息条数 */
     private Integer lag;
 
-    /** 实际跑了几轮（本轮单轮编排恒为 0 或 1） */
+    /** 实际跑了几轮检索（1–3；认人反问的终态路径为 0） */
     private Integer rounds;
 
     /** 去重、预算截断前的候选数 */

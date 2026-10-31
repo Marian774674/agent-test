@@ -75,7 +75,11 @@ class AskServiceTest {
         assertThat(response.getEvidence()).isEmpty();
         assertThat(response.getScope()).isNotNull();
         assertThat(response.getScope().getMessage()).isNotEmpty();
-        verify(difyWorkflowClient, times(1)).run(eq("ask"), anyMap());
+        // resolve + 空候选后的 expand；没有任何 stage=answer 调用
+        ArgumentCaptor<Map<String, Object>> captor = ArgumentCaptor.forClass(Map.class);
+        verify(difyWorkflowClient, times(2)).run(eq("ask"), captor.capture());
+        assertThat(captor.getAllValues()).extracting(inputs -> inputs.get("stage"))
+                .containsExactly("resolve", "expand");
     }
 
     @Test
@@ -148,8 +152,12 @@ class AskServiceTest {
         askService.ask(question("小郑的生日"));
 
         ArgumentCaptor<Map<String, Object>> captor = ArgumentCaptor.forClass(Map.class);
-        verify(difyWorkflowClient, times(2)).run(eq("ask"), captor.capture());
-        String candidates = String.valueOf(captor.getAllValues().get(1).get("candidates"));
+        // resolve + 第 1 轮 answer + （答案为空后的）expand
+        verify(difyWorkflowClient, times(3)).run(eq("ask"), captor.capture());
+        Map<String, Object> answerInputs = captor.getAllValues().stream()
+                .filter(inputs -> "answer".equals(inputs.get("stage")))
+                .findFirst().orElseThrow();
+        String candidates = String.valueOf(answerInputs.get("candidates"));
         assertThat(candidates).contains("note:").contains("msg:");
         Assertions.assertThat(candidates).contains("11月11日");
     }

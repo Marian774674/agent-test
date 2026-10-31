@@ -53,9 +53,12 @@ import java.util.Set;
  * → Dify 作答 → Spring 校验证据 → 终态表 → 写 {@code ask_trace}。
  *
  * <p>各步失败都只降级、不 500：resolve 失败按原问题检索，召回失败按无候选处理，
- * 作答失败降级为证据列表，轨迹写不进去只记日志。
+ * 作答失败降级为证据列表，expand 失败或没给出新词就结束多轮，
+ * 轨迹写不进去只记日志。
  *
- * <p>本轮只做单轮（不做 §7.6 的 expand），多轮由后续任务接入。
+ * <p>多轮（spec §7.6）：最多 3 轮（含第 1 轮）。每轮检索后把结果<b>跨轮累计</b>，
+ * 答不出（空答案 / 作答失败 / 证据越界）才调 {@code stage=expand} 要新检索串与新实体；
+ * 累计集在每次作答前才做一次 30k/150 的预算截断；终态表只在循环结束后判定一次。
  */
 @Service
 public class AskServiceImpl implements AskService {
@@ -72,6 +75,12 @@ public class AskServiceImpl implements AskService {
 
     /** spec §7.1：queries 最多 4 条；词法通道每条都跑，不能无上限。 */
     static final int MAX_QUERIES = 4;
+
+    /** spec §7.6：最多 3 轮，含第 1 轮。 */
+    static final int MAX_ROUNDS = 3;
+
+    /** expand 阶段给模型看的累计候选摘要上限（字符）。 */
+    static final int EXPAND_CHAR_LIMIT = 12_000;
 
     static final int KNOWN_CONTACTS_LIMIT = 200;
     static final int QUOTE_LIMIT = 200;
@@ -197,42 +206,77 @@ public class AskServiceImpl implements AskService {
         }
         EmbeddingJobService.EmbeddingStatus status = safeStatus();
 
-        // 5. 单轮召回 + RRF 融合（多轮 expand 留给后续任务）
+        // 5. 多轮召回（≤3 轮，含第 1 轮）：每轮检索 → 跨轮累计 → 作答，答不出才 expand
+        Map<String, Integer> channels = emptyChannels();
+        RetrievalResult cumulative = null;
+        String latestTimeHint = resolved.timeHint();
         QueryPlan plan = new QueryPlan(subjects, resolved.entities(), resolved.keywords(),
                 resolved.queries(), resolved.timeFrom(), resolved.timeTo());
-        RetrievalResult result = null;
-        try {
-            result = retrievalService.retrieve(plan, Set.of());
-        } catch (Exception e) {
-            log.warn("七路召回失败，按无候选处理：{}", e.toString());
-        }
-        Map<String, Integer> channels = channelsOf(result);
-        int candidateCnt = distinctKeys(result);
-
-        List<Candidate> candidates = RrfFusion.fuse(result, CHAR_BUDGET, MAX_ITEMS,
-                resolved.timeFrom(), resolved.timeTo());
-
-        // 6. 作答；失败只降级，不冒 500
+        int rounds = 0;
+        List<Candidate> candidates = List.of();
         String answerText = "";
         List<String> used = List.of();
         boolean answerFailed = false;
-        if (!candidates.isEmpty()) {
-            try {
-                Map<String, Object> outputs = difyWorkflowClient.run("ask", Map.of(
-                        "stage", "answer",
-                        "question", question,
-                        "candidates", renderCandidates(candidates),
-                        "time_hint", resolved.timeHint()));
-                answerText = text(outputs.get("answer")).trim();
-                List<String> parsed = stringsOrNull(outputs.get("used_ids"));
-                used = parsed == null ? List.of() : parsed;
-            } catch (Exception e) {
-                answerFailed = true;
-                log.warn("作答失败，降级为证据列表：{}", e.toString());
-            }
-        }
 
-        // 7. 证据校验 + 终态表（spec §7.7，优先级从上到下）
+        for (int round = 1; round <= MAX_ROUNDS; round++) {
+            rounds = round;
+
+            // 5.1 检索：本轮排除累计集里已有的 key（R7）；单轮失败不冒 500
+            RetrievalResult fresh = retrieveSafely(plan, keysOf(cumulative));
+            if (fresh != null) {
+                accumulateChannels(channels, fresh);
+                cumulative = cumulative == null ? fresh : cumulative.merge(fresh);
+            }
+
+            // 5.2 预算截断只对累计集做一次，且在下一次作答前（R8）；时间软分段用第 1 轮的区间
+            candidates = RrfFusion.fuse(cumulative, CHAR_BUDGET, MAX_ITEMS,
+                    resolved.timeFrom(), resolved.timeTo());
+
+            // 5.3 作答；失败只降级，不冒 500
+            answerText = "";
+            used = List.of();
+            answerFailed = false;
+            if (!candidates.isEmpty()) {
+                try {
+                    Map<String, Object> outputs = difyWorkflowClient.run("ask", Map.of(
+                            "stage", "answer",
+                            "question", question,
+                            "candidates", renderCandidates(candidates),
+                            "time_hint", nullToEmpty(latestTimeHint)));
+                    answerText = text(outputs.get("answer")).trim();
+                    List<String> parsed = stringsOrNull(outputs.get("used_ids"));
+                    used = parsed == null ? List.of() : parsed;
+                } catch (Exception e) {
+                    answerFailed = true;
+                    log.warn("作答失败，降级为证据列表：{}", e.toString());
+                }
+            }
+
+            // 5.4 有可追溯的结论就收工；否则在还有轮次预算时 expand（R3/R10）
+            boolean usable = !answerFailed && !answerText.isEmpty()
+                    && !used.isEmpty() && allowedKeys(candidates).containsAll(used);
+            if (usable || round == MAX_ROUNDS) {
+                break;
+            }
+
+            ExpandResult expand = expandSafely(question, candidates, latestTimeHint);
+            if (expand == null || (expand.queries().isEmpty() && expand.entities().isEmpty())) {
+                // expand 失败或没有新词：再检索也是原地打转
+                break;
+            }
+            if (!expand.timeHint().isBlank()) {
+                latestTimeHint = expand.timeHint();
+            }
+            // R5：只给了实体没给检索串时，用实体当检索串，词法/语义通道才有东西可查
+            List<String> roundQueries = expand.queries().isEmpty()
+                    ? expand.entities() : expand.queries();
+            // R6：expand 发现的人名只进本轮 entities（名字出现通道），不改认人结果、不加 subjects
+            plan = new QueryPlan(subjects, expand.entities(), resolved.keywords(), roundQueries,
+                    expand.timeFrom(), expand.timeTo());
+        }
+        int candidateCnt = distinctKeys(cumulative);
+
+        // 7. 证据校验 + 终态表（spec §7.7，优先级从上到下；循环结束后只判定一次）
         Set<String> allowed = new HashSet<>();
         for (Candidate candidate : candidates) {
             allowed.add(candidate.key());
@@ -280,9 +324,9 @@ public class AskServiceImpl implements AskService {
             }
         }
 
-        AskScopeVO scope = scope(status, 1, candidateCnt, channels, scopeMessage);
+        AskScopeVO scope = scope(status, rounds, candidateCnt, channels, scopeMessage);
         AskResponse response = response(finalAnswer, degraded, evidence, needClarify, scope);
-        writeTrace(question, resolved, channels, candidateCnt, 1, finalAnswer, degraded, startedAt);
+        writeTrace(question, resolved, channels, candidateCnt, rounds, finalAnswer, degraded, startedAt);
         return response;
     }
 
@@ -338,6 +382,41 @@ public class AskServiceImpl implements AskService {
                             String timeHint,
                             LocalDateTime timeFrom,
                             LocalDateTime timeTo) {
+    }
+
+    // ------------------------------------------------------------------ expand
+
+    /**
+     * spec §7.6 / R4：把问题 + 累计候选摘要发给 Dify，换回新检索串与新实体。
+     * 解析口径与 resolve 完全一致（queries 截 4 条、时间字段整对置空）。
+     * 调用或解析失败都返回 {@code null}：多轮就地结束，绝不冒 500（R11）。
+     */
+    private ExpandResult expandSafely(String question, List<Candidate> candidates, String timeHint) {
+        try {
+            Map<String, Object> outputs = difyWorkflowClient.run("ask", Map.of(
+                    "stage", "expand",
+                    "question", question,
+                    "candidates", truncate(renderCandidates(candidates), EXPAND_CHAR_LIMIT),
+                    "time_hint", nullToEmpty(timeHint)));
+            List<String> queries = strings(outputs.get("queries")).stream()
+                    .filter(query -> !query.isBlank())
+                    .limit(MAX_QUERIES)
+                    .toList();
+            List<String> entities = strings(outputs.get("entities"));
+            LocalDateTime[] range = parseTimeRange(outputs.get("time_from"), outputs.get("time_to"));
+            return new ExpandResult(queries, entities, text(outputs.get("time_hint")).trim(),
+                    range[0], range[1]);
+        } catch (Exception e) {
+            log.warn("expand 失败，结束多轮检索：{}", e.toString());
+            return null;
+        }
+    }
+
+    private record ExpandResult(List<String> queries,
+                                List<String> entities,
+                                String timeHint,
+                                LocalDateTime timeFrom,
+                                LocalDateTime timeTo) {
     }
 
     /** Dify 只做格式约定；解析不了就两个都置空，按无时间提示处理，不报错（spec §7.1）。 */
@@ -400,15 +479,58 @@ public class AskServiceImpl implements AskService {
         return channels;
     }
 
-    /** 七个键恒在：跑了的通道给去重前原始命中数，没跑/失败的给 null。 */
-    private static Map<String, Integer> channelsOf(RetrievalResult result) {
-        Map<String, Integer> channels = new LinkedHashMap<>();
-        Map<Channel, List<Candidate>> hits = result == null ? null : result.hits();
-        for (Channel channel : Channel.values()) {
-            List<Candidate> list = hits == null ? null : hits.get(channel);
-            channels.put(channel.key(), list == null ? null : list.size());
+    /**
+     * 逐轮累加通道计数（R9）：某通道只要有一轮跑过，就把各轮非 null 的值相加；
+     * 所有轮次都没跑/失败（值全是 null）时保持 null。null 与 0 不能混。
+     */
+    private static void accumulateChannels(Map<String, Integer> sums, RetrievalResult result) {
+        if (result == null || result.hits() == null) {
+            return;
         }
-        return channels;
+        for (Channel channel : Channel.values()) {
+            List<Candidate> list = result.hits().get(channel);
+            if (list == null) {
+                continue;
+            }
+            Integer previous = sums.get(channel.key());
+            sums.put(channel.key(), previous == null ? list.size() : previous + list.size());
+        }
+    }
+
+    private RetrievalResult retrieveSafely(QueryPlan plan, Set<String> excludeKeys) {
+        try {
+            return retrievalService.retrieve(plan, excludeKeys);
+        } catch (Exception e) {
+            log.warn("七路召回失败，按无候选处理：{}", e.toString());
+            return null;
+        }
+    }
+
+    /** 累计集里所有 {@code type:id}，作为下一轮的 excludeKeys。 */
+    private static Set<String> keysOf(RetrievalResult result) {
+        if (result == null || result.hits() == null) {
+            return Set.of();
+        }
+        Set<String> keys = new HashSet<>();
+        for (List<Candidate> list : result.hits().values()) {
+            if (list == null) {
+                continue;
+            }
+            for (Candidate candidate : list) {
+                if (candidate != null) {
+                    keys.add(candidate.key());
+                }
+            }
+        }
+        return keys;
+    }
+
+    private static Set<String> allowedKeys(List<Candidate> candidates) {
+        Set<String> allowed = new HashSet<>();
+        for (Candidate candidate : candidates) {
+            allowed.add(candidate.key());
+        }
+        return allowed;
     }
 
     /** candidate_cnt：跨通道去重、预算截断前的候选数。 */
