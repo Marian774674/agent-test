@@ -6,6 +6,10 @@ export interface Evidence {
   id: string
   label: string
   content: string
+  /** 出处，例如「三班群 · 小明 · 10-28 21:03」；老后端可能没有 */
+  source?: string
+  /** 第一条来源消息的原文，默认折叠展示 */
+  quote?: string
 }
 
 export interface ClarifyCandidate {
@@ -20,6 +24,24 @@ export interface ClarifyCandidate {
 export interface ClarifyState {
   alias: string
   candidates: ClarifyCandidate[]
+  /** 该称呼在记录里出现的次数；老后端可能没有 */
+  occurrences?: number
+}
+
+/** 一次问答的检索范围与计数（spec §7.8）；老后端可能不返回 */
+export interface AskScope {
+  /** 语义通道是否可用 */
+  semantic: boolean
+  /** 尚未建立向量的消息条数 */
+  lag: number
+  /** 实际跑了几轮检索 */
+  rounds: number
+  /** 去重、预算截断前的候选数 */
+  candidateCnt: number
+  /** 通道 -> 原始命中数；null 表示该路没跑或失败 */
+  channels: Record<string, number | null>
+  /** 给人看的一句话；空表示无需解释 */
+  message: string
 }
 
 export interface AskResponse {
@@ -28,6 +50,7 @@ export interface AskResponse {
   degraded: boolean
   evidence: Evidence[]
   needClarify: ClarifyState | null
+  scope?: AskScope
 }
 
 export interface ClarifyAnswer {
