@@ -4,6 +4,7 @@ import com.czx.qqmessageassistantjava.entity.MessageEmbedding;
 import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Options;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.ResultType;
 import org.apache.ibatis.annotations.Select;
@@ -43,12 +44,26 @@ public interface MessageEmbeddingMapper {
             + "LIMIT #{limit}")
     List<MissingMessage> selectMissing(@Param("model") String model, @Param("limit") int limit);
 
+    /** 待索引消息条数：与 {@link #selectMissing} 同一谓词，不加 LIMIT，供状态接口使用。 */
+    @Select("SELECT COUNT(*) FROM message_log m "
+            + "LEFT JOIN message_embedding e "
+            + "       ON e.message_log_id = m.id AND e.model = #{model} "
+            + "WHERE m.direction = 'IN' "
+            + "  AND m.content <> '' "
+            + "  AND e.message_log_id IS NULL")
+    long countMissing(@Param("model") String model);
+
     /**
      * 启动时把该模型的全量向量流式读进 off-heap 缓冲；50 万行不能一次性堆进内存。
+     *
+     * <p>{@code fetchSize = Integer.MIN_VALUE} 是 Connector/J 的流式开关：
+     * 只有 {@link ResultHandler} 还不够，驱动仍会把整个结果集缓存在内存里。
+     * 同理，handler 内不能再用同一个连接发查询。
      */
     @Select("SELECT message_log_id, model, dim, vector, created_at FROM message_embedding "
             + "WHERE model = #{model} ORDER BY message_log_id")
     @ResultType(MessageEmbedding.class)
+    @Options(fetchSize = Integer.MIN_VALUE)
     void selectAll(@Param("model") String model, ResultHandler<MessageEmbedding> handler);
 
     @Select("SELECT COUNT(*) FROM message_embedding WHERE model = #{model}")
