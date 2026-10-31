@@ -29,6 +29,9 @@ app:
     scan-interval-ms: 3600000
     batch-size: 50
   embedding:
+    # 测试不加载真模型：索引任务的向量由测试里的 @Primary fake 提供。
+    # 否则每个 Spring 上下文启动都会去加载 ONNX 模型并读写索引。
+    enabled: false
     # 把索引定时任务推远：首次执行也推迟 1 小时，避免测试进行中往共享索引里追加数据
     index-interval-ms: 3600000
     index-initial-delay-ms: 3600000

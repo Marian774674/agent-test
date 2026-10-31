@@ -84,6 +84,14 @@ public class EmbeddingJobServiceImpl implements EmbeddingJobService {
             long messageId = missing.get(i).id();
             float[] vector = vectors.get(i);
 
+            // 写库前先验维度：一旦 upsert 了长度不符的向量，selectMissing 以后就再也
+            // 看不到这条消息（库里有、索引里没有、lag=0），只能靠全量重建才能修复。
+            if (vector == null || vector.length != indexDim) {
+                log.warn("跳过维度不符的向量：messageLogId={}, dim={}, 期望 {}",
+                        messageId, vector == null ? null : vector.length, indexDim);
+                continue;
+            }
+
             MessageEmbedding row = new MessageEmbedding();
             row.setMessageLogId(messageId);
             row.setModel(model);
@@ -105,15 +113,23 @@ public class EmbeddingJobServiceImpl implements EmbeddingJobService {
             return 0;
         }
         int removed = messageEmbeddingMapper.deleteByModel(embeddingService.modelId());
+        // 库里已经清空，内存索引必须同步清空：否则重建过程中同一 id 会被再次 append，
+        // 而且中途失败时索引会停在「旧 N 条 + 新 k 条重复」的状态。
+        index.reset();
+        indexLoaded = false;
         int total = 0;
-        while (true) {
-            int indexed = indexMissing(REBUILD_BATCH);
-            total += indexed;
-            if (indexed == 0) {
-                break;
+        try {
+            while (true) {
+                int indexed = indexMissing(REBUILD_BATCH);
+                total += indexed;
+                if (indexed == 0) {
+                    break;
+                }
             }
+        } finally {
+            // 无论循环成功、抛异常还是半途而废，都让内存索引与库里的真实状态对齐
+            loadIndex();
         }
-        loadIndex();
         log.info("向量重建完成：删除 {} 行，重新写入 {} 行，索引 {} 条", removed, total, index.size());
         return total;
     }

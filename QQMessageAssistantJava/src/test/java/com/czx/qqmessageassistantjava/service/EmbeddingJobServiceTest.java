@@ -21,6 +21,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * 索引任务：增量写入、状态统计、重建、启动加载。
@@ -43,12 +44,26 @@ class EmbeddingJobServiceTest {
 
         @Bean
         @Primary
-        EmbeddingService fakeEmbeddingService() {
+        FakeEmbeddingService fakeEmbeddingService() {
             return new FakeEmbeddingService();
         }
     }
 
     static final class FakeEmbeddingService implements EmbeddingService {
+
+        /** 模拟 HTTP 向量端点抖动：让 embed/embedBatch 抛异常。 */
+        private volatile boolean failing;
+
+        /** 模拟模型换了维度：返回长度不等于 512 的向量。 */
+        private volatile boolean wrongDimension;
+
+        void setFailing(boolean failing) {
+            this.failing = failing;
+        }
+
+        void setWrongDimension(boolean wrongDimension) {
+            this.wrongDimension = wrongDimension;
+        }
 
         @Override
         public boolean available() {
@@ -67,6 +82,12 @@ class EmbeddingJobServiceTest {
 
         @Override
         public float[] embed(String text) {
+            if (failing) {
+                throw new IllegalStateException("fake embedding failure");
+            }
+            if (wrongDimension) {
+                return new float[]{1f, 0f, 0f, 0f};
+            }
             return unitVector(text);
         }
 
@@ -94,6 +115,9 @@ class EmbeddingJobServiceTest {
 
     @Autowired
     private EmbeddingJobService service;
+
+    @Autowired
+    private FakeEmbeddingService fake;
 
     @Autowired
     private MessageEmbeddingMapper embeddingMapper;
@@ -160,6 +184,45 @@ class EmbeddingJobServiceTest {
             assertThat(index.contains(second)).isTrue();
         } finally {
             cleanup(first, second);
+        }
+    }
+
+    @Test
+    void rebuild_failure_leaves_index_consistent() {
+        long first = 9_910_051L;
+        long second = 9_910_052L;
+        insertIn(first, "重建失败第一条");
+        insertIn(second, "重建失败第二条");
+        try {
+            assertThat(service.indexMissing(10)).isEqualTo(2);
+            assertThat(index.size()).isEqualTo(2);
+
+            fake.setFailing(true);
+            assertThatThrownBy(service::rebuild).isInstanceOf(RuntimeException.class);
+
+            // finally 里的 loadIndex 让索引回到库里的真实状态：0 条，2 条待补
+            assertThat(index.size()).isZero();
+            assertThat(service.status().lag()).isEqualTo(2);
+        } finally {
+            fake.setFailing(false);
+            cleanup(first, second);
+        }
+    }
+
+    @Test
+    void indexMissing_skips_vector_with_wrong_dimension() {
+        long id = 9_910_061L;
+        insertIn(id, "维度错误的向量");
+        try {
+            fake.setWrongDimension(true);
+
+            assertThat(service.indexMissing(10)).isZero();
+
+            // 长度不符的向量绝不能先写库：否则 selectMissing 永远看不到它，查询却拿不到
+            assertThat(embeddingMapper.countByModel(MODEL)).isZero();
+        } finally {
+            fake.setWrongDimension(false);
+            cleanup(id);
         }
     }
 
