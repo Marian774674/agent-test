@@ -35,10 +35,13 @@ public interface MessageLogMapper extends BaseMapper<MessageLog> {
 
     /**
      * 中文全文召回（ngram）：<b>不按 sender 或会话过滤</b>——答案可以在任何人说的任何会话里。
+     * 但只取 {@code direction = 'IN'}：机器人自己发出去的话不是证据（spec §3.1），
+     * 否则机器人说过的一句会被当成对方说的，证据卡上还会署上对方的名字。
      * 空串 / NULL 的 content 不参与 MATCH，天然被排除。
      */
     @Select("SELECT * FROM message_log "
-            + "WHERE MATCH(content) AGAINST(#{q} IN NATURAL LANGUAGE MODE) "
+            + "WHERE direction = 'IN' "
+            + "AND MATCH(content) AGAINST(#{q} IN NATURAL LANGUAGE MODE) "
             + "ORDER BY MATCH(content) AGAINST(#{q} IN NATURAL LANGUAGE MODE) DESC, id DESC "
             + "LIMIT #{limit}")
     List<MessageLog> searchFulltext(@Param("q") String q, @Param("limit") int limit);

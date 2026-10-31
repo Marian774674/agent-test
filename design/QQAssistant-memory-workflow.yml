@@ -654,7 +654,9 @@ workflow:
             规则：
             1. contacts 只在消息里出现了「和某个 sender_id 绑定的称呼」时才输出；alias 不超过 16 字，relation 拿不准就留空串。
             2. notes 的 predicate 只能取下列之一：生日、姓名、专业、班级、学号、住址、电话、时间安排、偏好、关系、其他。都不合适就用「其他」。
-            3. subject_sender_id 只能取输入行里的 sender_id；这条事实是关于我自己的，填 null。
+            3. subject_sender_id 取这条事实「说的是谁」的 sender_id：可以是本批发言人（含用「我」指代的自己），
+               也可以是 known_contacts 里、且其称呼在本条证据消息正文中出现过的人；说主人自己时填 null。
+               拿不准是谁的就不要输出这条。
             4. value 不超过 60 字，写成脱离上下文也能看懂的一句话。
             5. happened_at 只在消息明确说了日期时填 YYYY-MM-DD，否则留空串。
             6. source_msg_ids 只能取输入行开头的 id（整数数组），至少一个；拿不出证据的条目不要输出。

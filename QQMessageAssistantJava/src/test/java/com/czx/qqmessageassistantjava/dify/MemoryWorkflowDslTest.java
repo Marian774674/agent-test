@@ -79,6 +79,19 @@ class MemoryWorkflowDslTest {
         assertThat(promptText("answer_llm")).contains("msg-mention");
     }
 
+    /**
+     * spec §6：主体不限于本批发言人，还可以是 known_contacts 里、
+     * 且称呼出现在证据正文中的联系人。提示词不改，Spring 侧的闸门就永远等不到这样的 note。
+     */
+    @Test
+    void extract_prompt_allows_a_contact_named_in_the_evidence() {
+        String prompt = promptText("extract_llm");
+        assertThat(prompt)
+                .contains("known_contacts")
+                .contains("证据")
+                .doesNotContain("只能取输入行里的 sender_id");
+    }
+
     @Test
     void node_ids_are_unique() {
         List<String> ids = nodes().stream().map(node -> String.valueOf(node.get("id"))).toList();

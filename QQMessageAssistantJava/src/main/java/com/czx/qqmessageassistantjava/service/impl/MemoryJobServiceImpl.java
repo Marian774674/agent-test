@@ -178,6 +178,11 @@ public class MemoryJobServiceImpl implements MemoryJobService {
                 .filter(m -> m.getId() != null)
                 .collect(Collectors.toMap(MessageLog::getId,
                         m -> nullToEmpty(m.getContent()), (first, second) -> first));
+        // 证据作者：主体亲自写了这条证据，才算他名下的第一人称事实
+        Map<Long, Long> senderById = batch.stream()
+                .filter(m -> m.getId() != null && m.getSenderId() != null)
+                .collect(Collectors.toMap(MessageLog::getId, MessageLog::getSenderId,
+                        (first, second) -> first));
         // 只用送给 Dify 的那份 known_contacts 快照；一人可能有多个 alias
         Map<Long, List<String>> aliasesBySender = knownContacts.stream()
                 .filter(c -> c.getSenderId() != null && c.getAlias() != null && !c.getAlias().isBlank())
@@ -194,11 +199,11 @@ public class MemoryJobServiceImpl implements MemoryJobService {
                 log.warn("丢弃一条 note：value={} 证据 {} 不在本批内", value, evidence);
                 continue;
             }
-            // 归因闸门（spec §6）：本批发言人放行；其他人必须在 known_contacts 里，
+            // 归因闸门（spec §6）：主体亲自写了证据放行；否则必须是 known_contacts 里的人，
             // 且其任一 alias 出现在本条 note 的证据正文中。防「小红的事记到小明头上」。
-            if (subject != null && !attributionAllowed(subject, senders, aliasesBySender,
-                    evidence, contentById)) {
-                log.info("丢弃一条 note：主体 {} 的归因不成立（不在本批发言人/known_contacts，或其 alias 未出现在证据 {} 正文中）",
+            if (subject != null && !attributionAllowed(subject, aliasesBySender,
+                    evidence, contentById, senderById)) {
+                log.info("丢弃一条 note：主体 {} 的归因不成立（未亲自写证据 {}，也不在 known_contacts 或其 alias 未出现在正文中）",
                         subject, evidence);
                 continue;
             }
@@ -223,19 +228,26 @@ public class MemoryJobServiceImpl implements MemoryJobService {
     }
 
     /**
-     * 主体是否可以归因：
+     * 主体是否可以归因（spec §6）：
      * <ol>
-     *   <li>本批发言人直接放行（第一人称的事实里不会出现自己的名字，不能强求 alias）；</li>
-     *   <li>否则必须是 known_contacts 快照里的人，且其任一 alias 在本条 note 的证据正文里出现过。</li>
+     *   <li>主体本人写了本条 note 的证据消息 → 放行（第一人称的事实里不会出现自己的名字）；</li>
+     *   <li>否则主体必须是 known_contacts 快照里的人，且其任一 alias 在本条 note 的证据正文里出现过。</li>
      * </ol>
-     * 注意只拼「本条 note 自己的」证据正文：别的 note 的证据不能拿来授权。
+     * 只拼「本条 note 自己的」证据正文：别的 note 的证据不能拿来授权。
+     *
+     * <p><b>「主体在本批说过话」本身不授权。</b>群聊一批两百条消息里几乎人人都是发言人，
+     * 若只按「在本批发言」放行，模型把小红说的「我生日 11 月 11 日」记到同批的小明头上时，
+     * 闸门会形同虚设——而这正是本闸门要防的那一类错误。要求「主体亲自写了这条证据」
+     * 才同时满足第一人称与防错配两个目标。
      */
     private static boolean attributionAllowed(Long subject,
-                                             Set<Long> senders,
                                              Map<Long, List<String>> aliasesBySender,
                                              List<Long> evidence,
-                                             Map<Long, String> contentById) {
-        if (senders.contains(subject)) {
+                                             Map<Long, String> contentById,
+                                             Map<Long, Long> senderById) {
+        boolean authored = evidence.stream()
+                .anyMatch(id -> subject.equals(senderById.get(id)));
+        if (authored) {
             return true;
         }
         List<String> aliases = aliasesBySender.get(subject);

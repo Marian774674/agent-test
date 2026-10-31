@@ -10,6 +10,7 @@ import com.czx.qqmessageassistantjava.mapper.FileTaskMapper;
 import com.czx.qqmessageassistantjava.mapper.MemoMapper;
 import com.czx.qqmessageassistantjava.mapper.MemoryNoteMapper;
 import com.czx.qqmessageassistantjava.mapper.MessageLogMapper;
+import com.czx.qqmessageassistantjava.service.EmbeddingJobService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -72,19 +73,22 @@ public class RetrievalServiceImpl implements RetrievalService {
     private final FileTaskMapper fileTaskMapper;
     private final EmbeddingService embeddingService;
     private final EmbeddingIndex embeddingIndex;
+    private final EmbeddingJobService embeddingJobService;
 
     public RetrievalServiceImpl(MemoryNoteMapper memoryNoteMapper,
                                 MessageLogMapper messageLogMapper,
                                 MemoMapper memoMapper,
                                 FileTaskMapper fileTaskMapper,
                                 EmbeddingService embeddingService,
-                                EmbeddingIndex embeddingIndex) {
+                                EmbeddingIndex embeddingIndex,
+                                EmbeddingJobService embeddingJobService) {
         this.memoryNoteMapper = memoryNoteMapper;
         this.messageLogMapper = messageLogMapper;
         this.memoMapper = memoMapper;
         this.fileTaskMapper = fileTaskMapper;
         this.embeddingService = embeddingService;
         this.embeddingIndex = embeddingIndex;
+        this.embeddingJobService = embeddingJobService;
     }
 
     @Override
@@ -119,9 +123,17 @@ public class RetrievalServiceImpl implements RetrievalService {
         }
     }
 
+    /**
+     * 语义通道跑不跑，与 {@code scope.semantic} 同源（spec §7.8）。
+     *
+     * <p>只看 {@code embeddingService.available()} 是不够的：模型就绪但内存索引没加载时
+     * （迁移没跑、启动加载失败），{@code scope.semantic} 会是 {@code false}，而这里若仍跑通道，
+     * 就会报「语义 0 条」——前端同时显示「语义未启用」和「语义 0」，自相矛盾。
+     * {@code null} 表示没跑，{@code 0} 表示跑了没命中，两者不能混。
+     */
     private boolean semanticAvailable() {
         try {
-            return embeddingService.available();
+            return embeddingService.available() && embeddingJobService.status().semantic();
         } catch (Exception e) {
             log.warn("语义通道可用性检查失败，按不可用处理：{}", e.toString());
             return false;

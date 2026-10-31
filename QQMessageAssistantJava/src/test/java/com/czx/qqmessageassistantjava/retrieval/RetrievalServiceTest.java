@@ -35,6 +35,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * 七路召回的集成测试。
@@ -152,6 +153,10 @@ class RetrievalServiceTest {
     @Autowired
     private MessageLogMapper messageLogMapper;
 
+    /** 语义可用性的唯一来源；默认「模型在且索引已加载」。 */
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    private com.czx.qqmessageassistantjava.service.EmbeddingJobService embeddingJobService;
+
     @Autowired
     private MemoMapper memoMapper;
 
@@ -166,6 +171,53 @@ class RetrievalServiceTest {
         index.reset();
         fake.setAvailable(false);
         fake.resetEmbedCalls();
+        when(embeddingJobService.status())
+                .thenReturn(new com.czx.qqmessageassistantjava.service.EmbeddingJobService.EmbeddingStatus(
+                        true, 0, 0));
+    }
+
+    /**
+     * spec §3.1：机器人自己发出的 OUT 不是证据。词法/提及两路共用全文检索，
+     * 少了 direction 过滤就会把机器人说过的话当成对方说的，证据卡上还会署上对方的名字。
+     */
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void bot_sent_message_is_not_evidence() {
+        long id = 9_930_601L;
+        messageLogMapper.deleteById(id);
+        try {
+            insertMessage(id, null, "小红私聊", 201L, "小红",
+                    "机器人这句独有关键词丙丁戊", AT, "OUT");
+
+            var plan = new QueryPlan(Set.of(), List.of(), List.of(),
+                    List.of("独有关键词丙丁戊"), null, null);
+
+
+            var result = service.retrieve(plan, Set.of());
+
+            assertThat(result.hits().get(Channel.MSG_LEXICAL))
+                    .extracting(Candidate::key).doesNotContain("msg:" + id);
+        } finally {
+            messageLogMapper.deleteById(id);
+        }
+    }
+
+    /**
+     * 语义通道跑没跑，必须和 {@code scope.semantic} 用同一个判据（spec §7.8）。
+     * 模型在、索引没加载时，该通道应缺席（null），而不是报 0。
+     */
+    @Test
+    void semantic_channel_is_absent_when_scope_says_semantic_is_not_ready() {
+        fake.setAvailable(true);
+        when(embeddingJobService.status())
+                .thenReturn(new com.czx.qqmessageassistantjava.service.EmbeddingJobService.EmbeddingStatus(
+                        false, 0, 0));
+        var plan = new QueryPlan(Set.of(), List.of(), List.of("随便问问"),
+                List.of("随便问问"), null, null);
+
+        var result = service.retrieve(plan, Set.of());
+
+        assertThat(result.hits()).doesNotContainKey(Channel.MSG_SEMANTIC);
     }
 
     @Test
@@ -308,7 +360,8 @@ class RetrievalServiceTest {
         doThrow(new RuntimeException("note query boom"))
                 .when(brokenNoteMapper).searchByKeywords(anyList(), anyInt());
         RetrievalService broken = new RetrievalServiceImpl(
-                brokenNoteMapper, messageLogMapper, memoMapper, fileTaskMapper, fake, index);
+                brokenNoteMapper, messageLogMapper, memoMapper, fileTaskMapper, fake, index,
+                embeddingJobService);
 
         Memo memo = new Memo();
         memo.setSenderId(401L);
@@ -527,6 +580,11 @@ class RetrievalServiceTest {
 
     private void insertMessage(long id, Long chatId, String chatName, long senderId, String senderName,
                                String content, LocalDateTime createdAt) {
+        insertMessage(id, chatId, chatName, senderId, senderName, content, createdAt, "IN");
+    }
+
+    private void insertMessage(long id, Long chatId, String chatName, long senderId, String senderName,
+                               String content, LocalDateTime createdAt, String direction) {
         MessageLog row = new MessageLog();
         row.setId(id);
         row.setSenderId(senderId);
@@ -536,7 +594,7 @@ class RetrievalServiceTest {
         row.setConversationId("conv-" + id);
         row.setMessageId("msg-" + id);
         row.setDedupeKey("retrieval-seed-" + id);
-        row.setDirection("IN");
+        row.setDirection(direction);
         row.setMsgType("text");
         row.setContent(content);
         row.setCreatedAt(createdAt);

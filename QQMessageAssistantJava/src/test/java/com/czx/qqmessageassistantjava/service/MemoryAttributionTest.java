@@ -119,6 +119,36 @@ class MemoryAttributionTest {
         assertThat(notesOf(SENDER_XIAOMING)).extracting(MemoryNote::getValue).doesNotContain(thirdPartyValue);
     }
 
+    /**
+     * spec §6 条件 2 对所有人成立：主体在本批说过话，不等于他授权了<b>别人</b>名下的事实。
+     * 小红说「我的生日 11 月 11 日」，模型把它记到小明头上——小明也在本批发言，但那条证据不是他写的。
+     */
+    @Test
+    void speaking_elsewhere_in_the_batch_does_not_authorize_someone_elses_fact() {
+        String value = uniqueValue("生日");
+        Long xiaohongMsg = seedMessage(SENDER_XIAOHONG, "小红", "我的生日是 11 月 11 日");
+        seedMessage(SENDER_XIAOMING, "小明", "好热");
+        armCursor(xiaohongMsg);
+        stubExtract(notes(noteJson(SENDER_XIAOMING, value, xiaohongMsg)));
+
+        assertThat(memoryJobService.runOnce()).isZero();
+
+        assertThat(notesOf(SENDER_XIAOMING)).extracting(MemoryNote::getValue).doesNotContain(value);
+    }
+
+    /** 第一人称的事不能因为「正文里没有自己的名字」被误杀：证据就是本人写的。 */
+    @Test
+    void own_first_person_fact_is_kept_without_the_alias_in_the_text() {
+        String value = uniqueValue("生日");
+        Long msgId = seedMessage(SENDER_XIAOMING, "小明", "我生日 11 月 11 日");
+        armCursor(msgId);
+        stubExtract(notes(noteJson(SENDER_XIAOMING, value, msgId)));
+
+        assertThat(memoryJobService.runOnce()).isEqualTo(1);
+
+        assertThat(notesOf(SENDER_XIAOMING)).extracting(MemoryNote::getValue).contains(value);
+    }
+
     private Long seedMessage(Long senderId, String senderName, String content) {
         MessageLog row = new MessageLog();
         row.setSenderId(senderId);
