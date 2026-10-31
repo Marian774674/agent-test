@@ -24,6 +24,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -98,9 +99,12 @@ public class MemoryJobServiceImpl implements MemoryJobService {
                 .filter(java.util.Objects::nonNull)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
 
+        // 本批 known_contacts 的快照：判定归因时只能用「送给 Dify 的这一份」，
+        // 本批 upsert 出来的联系人不能反过来授权同一批 note（spec §6）。
+        List<Contact> knownContacts = knownContacts();
         Map<String, Object> outputs = difyWorkflowClient.run("extract", Map.of(
                 "messages", renderMessages(batch),
-                "known_contacts", knownContactsJson(),
+                "known_contacts", knownContactsJson(knownContacts),
                 "owner_aliases", appSettingService.getOrDefault("owner_aliases", "")));
 
         List<Map<String, Object>> contacts = parseArray(outputs.get("contacts"));
@@ -121,7 +125,7 @@ public class MemoryJobServiceImpl implements MemoryJobService {
         long maxId = messageIds.stream().mapToLong(Long::longValue).max().orElse(cursor);
         AtomicInteger written = new AtomicInteger();
         transactionTemplate.executeWithoutResult(status -> {
-            written.set(write(contacts, notes, senders, messageIds));
+            written.set(write(contacts, notes, senders, messageIds, batch, knownContacts));
             appSettingService.putAll(Map.of(CURSOR_KEY, String.valueOf(maxId)));
         });
         log.info("夜间归纳：消息 {} 条 → contact {} 个 / note {} 条，游标 → {}",
@@ -153,7 +157,9 @@ public class MemoryJobServiceImpl implements MemoryJobService {
     private int write(List<Map<String, Object>> contacts,
                       List<Map<String, Object>> notes,
                       Set<Long> senders,
-                      Set<Long> messageIds) {
+                      Set<Long> messageIds,
+                      List<MessageLog> batch,
+                      List<Contact> knownContacts) {
         int contactCount = 0;
         for (Map<String, Object> raw : contacts) {
             Long senderId = toLong(raw.get("sender_id"));
@@ -167,18 +173,33 @@ public class MemoryJobServiceImpl implements MemoryJobService {
             contactCount++;
         }
 
+        // 证据正文按下标缓存：归因校验要求「alias 出现在该 note 自己的证据里」。
+        Map<Long, String> contentById = batch.stream()
+                .filter(m -> m.getId() != null)
+                .collect(Collectors.toMap(MessageLog::getId,
+                        m -> nullToEmpty(m.getContent()), (first, second) -> first));
+        // 只用送给 Dify 的那份 known_contacts 快照；一人可能有多个 alias
+        Map<Long, List<String>> aliasesBySender = knownContacts.stream()
+                .filter(c -> c.getSenderId() != null && c.getAlias() != null && !c.getAlias().isBlank())
+                .collect(Collectors.groupingBy(Contact::getSenderId,
+                        Collectors.mapping(Contact::getAlias, Collectors.toList())));
+
         List<MemoryNote> rows = new ArrayList<>();
         Set<String> seen = new LinkedHashSet<>();
         for (Map<String, Object> raw : notes) {
             Long subject = toLong(raw.get("subject_sender_id"));
-            if (subject != null && !senders.contains(subject)) {
-                log.warn("丢弃一条 note：主体 {} 不在本批内", subject);
-                continue;
-            }
             String value = truncate(str(raw.get("value")), VALUE_LIMIT);
             List<Long> evidence = idsOf(raw.get("source_msg_ids"));
             if (value.isBlank() || evidence.isEmpty() || !messageIds.containsAll(evidence)) {
                 log.warn("丢弃一条 note：value={} 证据 {} 不在本批内", value, evidence);
+                continue;
+            }
+            // 归因闸门（spec §6）：本批发言人放行；其他人必须在 known_contacts 里，
+            // 且其任一 alias 出现在本条 note 的证据正文中。防「小红的事记到小明头上」。
+            if (subject != null && !attributionAllowed(subject, senders, aliasesBySender,
+                    evidence, contentById)) {
+                log.info("丢弃一条 note：主体 {} 的归因不成立（不在本批发言人/known_contacts，或其 alias 未出现在证据 {} 正文中）",
+                        subject, evidence);
                 continue;
             }
             String predicate = predicate(str(raw.get("predicate")));
@@ -199,6 +220,45 @@ public class MemoryJobServiceImpl implements MemoryJobService {
         }
         rows.forEach(memoryNoteMapper::insert);
         return rows.size();
+    }
+
+    /**
+     * 主体是否可以归因：
+     * <ol>
+     *   <li>本批发言人直接放行（第一人称的事实里不会出现自己的名字，不能强求 alias）；</li>
+     *   <li>否则必须是 known_contacts 快照里的人，且其任一 alias 在本条 note 的证据正文里出现过。</li>
+     * </ol>
+     * 注意只拼「本条 note 自己的」证据正文：别的 note 的证据不能拿来授权。
+     */
+    private static boolean attributionAllowed(Long subject,
+                                             Set<Long> senders,
+                                             Map<Long, List<String>> aliasesBySender,
+                                             List<Long> evidence,
+                                             Map<Long, String> contentById) {
+        if (senders.contains(subject)) {
+            return true;
+        }
+        List<String> aliases = aliasesBySender.get(subject);
+        if (aliases == null || aliases.isEmpty()) {
+            return false;
+        }
+        String content = evidence.stream()
+                .map(id -> contentById.getOrDefault(id, ""))
+                .collect(Collectors.joining("\n"));
+        for (String alias : aliases) {
+            if (aliasAppearsIn(alias, content)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 大小写不敏感的子串判断；alias / 正文为空时不成立。包内可见，供测试。 */
+    static boolean aliasAppearsIn(String alias, String content) {
+        if (alias == null || alias.isBlank() || content == null) {
+            return false;
+        }
+        return content.toLowerCase(Locale.ROOT).contains(alias.trim().toLowerCase(Locale.ROOT));
     }
 
     private boolean alreadyExists(Long subject, String predicate, String value) {
@@ -232,10 +292,14 @@ public class MemoryJobServiceImpl implements MemoryJobService {
         return sb.toString();
     }
 
-    private String knownContactsJson() {
-        List<Contact> known = contactService.list(new LambdaQueryWrapper<Contact>()
+    /** 送给 Dify 的 known_contacts；调用方保存这份快照，归因校验必须用同一份。 */
+    private List<Contact> knownContacts() {
+        return contactService.list(new LambdaQueryWrapper<Contact>()
                 .orderByDesc(Contact::getUpdatedAt)
                 .last("LIMIT " + KNOWN_CONTACTS_LIMIT));
+    }
+
+    private String knownContactsJson(List<Contact> known) {
         List<Map<String, Object>> rows = known.stream().map(c -> Map.<String, Object>of(
                 "senderId", String.valueOf(c.getSenderId()),
                 "alias", nullToEmpty(c.getAlias()),
