@@ -11,15 +11,19 @@ import com.czx.qqmessageassistantjava.mapper.AskTraceMapper;
 import com.czx.qqmessageassistantjava.mapper.MemoryNoteMapper;
 import com.czx.qqmessageassistantjava.mapper.MessageLogMapper;
 import com.czx.qqmessageassistantjava.retrieval.Channel;
+import com.czx.qqmessageassistantjava.retrieval.QueryPlan;
+import com.czx.qqmessageassistantjava.retrieval.RetrievalService;
 import com.czx.qqmessageassistantjava.vo.AskResponse;
 import com.czx.qqmessageassistantjava.vo.EvidenceVO;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -28,12 +32,15 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.anySet;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -82,6 +89,9 @@ class AskSingleRoundTest {
 
     @MockitoBean
     private EmbeddingJobService embeddingJobService;
+
+    @MockitoSpyBean
+    private RetrievalService retrievalService;
 
     @BeforeEach
     void defaultStubs() {
@@ -321,6 +331,8 @@ class AskSingleRoundTest {
         assertThat(holder[0].getDegraded()).isTrue();
         assertThat(holder[0].getAnswer()).isEmpty();
         assertThat(holder[0].getEvidence()).isNotEmpty();
+        // 终态第 3 条：无需解释，空串而不是 null（spec §7.8）
+        assertThat(holder[0].getScope().getMessage()).isEmpty();
     }
 
     @Test
@@ -334,8 +346,10 @@ class AskSingleRoundTest {
 
         assertThat(response.getScope().getLag()).isEqualTo(2);
         assertThat(response.getScope().getSemantic()).isFalse();
-        // 上限来自 app.retrieval.pre-run-index-limit（测试 profile 置为 3）
-        verify(embeddingJobService, times(1)).indexMissing(3);
+        // 上限来自 app.retrieval.pre-run-index-limit（测试 profile 置为 3），且必须先补索引再读状态
+        InOrder order = inOrder(embeddingJobService);
+        order.verify(embeddingJobService).indexMissing(3);
+        order.verify(embeddingJobService).status();
     }
 
     @Test
@@ -367,17 +381,28 @@ class AskSingleRoundTest {
         insertMessage(null, 9_920_901L, "三班群", SENDER_A, "轨迹当事人", "轨迹测试内容", AT);
         stubStages(resolve(List.of(alias)), Map.of("answer", "", "used_ids", "[]"));
 
-        askService.ask(question(question));
+        AskResponse response = askService.ask(question(question));
+        var scope = response.getScope();
 
         List<AskTrace> traces = askTraceMapper.selectList(
                 new LambdaQueryWrapper<AskTrace>().eq(AskTrace::getQuestion, question));
         assertThat(traces).hasSize(1);
         AskTrace trace = traces.get(0);
-        assertThat(trace.getRounds()).isEqualTo(1);
-        assertThat(trace.getCandidateCnt()).isGreaterThanOrEqualTo(1);
-        assertThat(trace.getChannels()).contains("msg-person");
+        assertThat(trace.getRounds()).isEqualTo(scope.getRounds());
+        assertThat(trace.getCandidateCnt()).isEqualTo(scope.getCandidateCnt());
+        String expectedChannels = scope.getChannels().entrySet().stream()
+                .filter(entry -> entry.getValue() != null && entry.getValue() > 0)
+                .map(Map.Entry::getKey)
+                .collect(Collectors.joining(","));
+        assertThat(trace.getChannels()).isEqualTo(expectedChannels);
         assertThat(trace.getDegraded()).isFalse();
         assertThat(trace.getEntities()).contains(alias);
+        // 通道计数是去重前口径：各通道之和 >= 去重后的候选数
+        int channelSum = scope.getChannels().values().stream()
+                .filter(java.util.Objects::nonNull)
+                .mapToInt(Integer::intValue)
+                .sum();
+        assertThat(channelSum).isGreaterThanOrEqualTo(scope.getCandidateCnt());
     }
 
     /**
@@ -402,6 +427,104 @@ class AskSingleRoundTest {
         assertThat(evidence.getType()).isEqualTo("note");
         assertThat(evidence.getSource()).contains("三班群").contains("小明");
         assertThat(evidence.getQuote()).contains("小明生日");
+    }
+
+    /** spec §7.1：time_from / time_to 只要有一个非空且解析不了，两个都置空。 */
+    @Test
+    void unparseable_time_from_clears_both_bounds() {
+        String alias = "时间" + System.nanoTime();
+        contactService.addUser(SENDER_A, alias, "同事");
+        stubStages(Map.of(
+                "entities", "[\"" + alias + "\"]",
+                "keywords", "[]",
+                "queries", "[\"q\"]",
+                "time_hint", "上周",
+                "time_from", "上周",
+                "time_to", "2026-10-31T23:59"), Map.of());
+
+        askService.ask(question("她上周做了什么"));
+
+        ArgumentCaptor<QueryPlan> captor = ArgumentCaptor.forClass(QueryPlan.class);
+        verify(retrievalService).retrieve(captor.capture(), anySet());
+        assertThat(captor.getValue().timeFrom()).isNull();
+        assertThat(captor.getValue().timeTo()).isNull();
+    }
+
+    /** spec §7.5：群聊出处是「群名 · 人名 · 时间」，不是「QQ 群号 · …」。 */
+    @Test
+    void group_message_evidence_source_names_the_sender() {
+        String alias = "群证据" + System.nanoTime();
+        contactService.addUser(SENDER_A, alias, "同学");
+        MessageLog message = insertMessage(null, 9_920_901L, "三班群", SENDER_A, "小明",
+                "小明生日是11月11", AT);
+        stubStages(resolve(List.of(alias)),
+                Map.of("answer", "小明的生日是11月11日",
+                        "used_ids", "[\"msg:" + message.getId() + "\"]"));
+
+        AskResponse response = askService.ask(question("她什么时候生日"));
+
+        assertThat(response.getScope().getMessage()).isEmpty();
+        EvidenceVO evidence = response.getEvidence().get(0);
+        assertThat(evidence.getSource()).doesNotStartWith("QQ ");
+        assertThat(evidence.getSource()).contains("三班群").contains("小明");
+        assertThat(evidence.getSource().split(" · ")).hasSize(3);
+    }
+
+    /** 「等 N 条」的 N 是剩余条数（spec §7.5「其余以等 N 条收尾」）。 */
+    @Test
+    void note_evidence_summarizes_remaining_sources() {
+        String alias = "多源" + System.nanoTime();
+        contactService.addUser(SENDER_A, alias, "同学");
+        List<Long> messageIds = new ArrayList<>();
+        for (int i = 0; i < 5; i++) {
+            messageIds.add(insertMessage(null, 9_920_901L, "三班群", SENDER_A, "小明",
+                    "来源消息" + i, AT.plusMinutes(i)).getId());
+        }
+        String sourceIds = messageIds.stream().map(String::valueOf)
+                .collect(Collectors.joining(","));
+        MemoryNote note = seedNote(SENDER_A, "多源", "值", sourceIds);
+        stubStages(resolve(List.of(alias)),
+                Map.of("answer", "有", "used_ids", "[\"note:" + note.getId() + "\"]"));
+
+        AskResponse response = askService.ask(question("多源问题"));
+
+        String source = response.getEvidence().get(0).getSource();
+        // 3 条完整来源 + 1 段「等 2 条」
+        assertThat(source.split("；")).hasSize(4);
+        assertThat(source).contains("；").endsWith("等 2 条");
+    }
+
+    /** 模型重复引用同一个 id 时，证据卡只有一张。 */
+    @Test
+    void repeated_used_ids_render_one_evidence_card() {
+        String alias = "重复" + System.nanoTime();
+        contactService.addUser(SENDER_A, alias, "同事");
+        MessageLog message = insertMessage(null, 9_920_901L, "三班群", SENDER_A, "小明",
+                "重复引用测试", AT);
+        String key = "msg:" + message.getId();
+        stubStages(resolve(List.of(alias)),
+                Map.of("answer", "有", "used_ids", "[\"" + key + "\",\"" + key + "\"]"));
+
+        AskResponse response = askService.ask(question("重复引用问题"));
+
+        assertThat(response.getEvidence()).hasSize(1);
+        assertThat(response.getEvidence().get(0).getId()).isEqualTo(String.valueOf(message.getId()));
+    }
+
+    /** spec §7.1：queries 最多 4 条，回归的模型多给也不能放大全文查询次数。 */
+    @Test
+    void queries_are_capped_at_four() {
+        stubStages(Map.of(
+                "entities", "[]",
+                "keywords", "[]",
+                "queries", "[\"q1\",\"q2\",\"q3\",\"q4\",\"q5\"]",
+                "time_hint", "", "time_from", "", "time_to", ""), Map.of());
+
+        askService.ask(question("查询串上限" + System.nanoTime()));
+
+        ArgumentCaptor<QueryPlan> captor = ArgumentCaptor.forClass(QueryPlan.class);
+        verify(retrievalService).retrieve(captor.capture(), anySet());
+        assertThat(captor.getValue().queries()).containsExactly("q1", "q2", "q3", "q4");
     }
 
     // ---------------------------------------------------------------- helpers

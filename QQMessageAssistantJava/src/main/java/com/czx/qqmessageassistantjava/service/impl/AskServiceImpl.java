@@ -18,6 +18,7 @@ import com.czx.qqmessageassistantjava.retrieval.QueryPlan;
 import com.czx.qqmessageassistantjava.retrieval.RetrievalResult;
 import com.czx.qqmessageassistantjava.retrieval.RetrievalService;
 import com.czx.qqmessageassistantjava.retrieval.RrfFusion;
+import com.czx.qqmessageassistantjava.retrieval.SourceFormat;
 import com.czx.qqmessageassistantjava.service.AppSettingService;
 import com.czx.qqmessageassistantjava.service.AskService;
 import com.czx.qqmessageassistantjava.service.ContactService;
@@ -61,7 +62,6 @@ public class AskServiceImpl implements AskService {
 
     private static final Logger log = LoggerFactory.getLogger(AskServiceImpl.class);
     private static final ObjectMapper JSON = new ObjectMapper();
-    private static final DateTimeFormatter MM_DD = DateTimeFormatter.ofPattern("MM-dd HH:mm");
     private static final DateTimeFormatter SPACE_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
 
     /** spec §7.4：融合后的字符预算与条目上限。 */
@@ -69,6 +69,9 @@ public class AskServiceImpl implements AskService {
     static final int MAX_ITEMS = 150;
     /** 降级/反问时回给的候选条数（spec §7.7「候选前 5 条」）。 */
     static final int EVIDENCE_LIMIT = 5;
+
+    /** spec §7.1：queries 最多 4 条；词法通道每条都跑，不能无上限。 */
+    static final int MAX_QUERIES = 4;
 
     static final int KNOWN_CONTACTS_LIMIT = 200;
     static final int QUOTE_LIMIT = 200;
@@ -173,7 +176,7 @@ public class AskServiceImpl implements AskService {
         if (ambiguousAlias != null) {
             // 终态第 1 条：先问清是谁，不猜、不检索
             EmbeddingJobService.EmbeddingStatus status = safeStatus();
-            AskScopeVO scope = scope(status, 0, 0, emptyChannels(), null);
+            AskScopeVO scope = scope(status, 0, 0, emptyChannels(), "");
             AskResponse response = response("", false, List.of(),
                     clarifyState(ambiguousAlias, ambiguousRows, null), scope);
             writeTrace(question, resolved, scope.getChannels(), 0, 0, "", false, startedAt);
@@ -205,6 +208,7 @@ public class AskServiceImpl implements AskService {
         }
         Map<String, Integer> channels = channelsOf(result);
         int candidateCnt = distinctKeys(result);
+
         List<Candidate> candidates = RrfFusion.fuse(result, CHAR_BUDGET, MAX_ITEMS,
                 resolved.timeFrom(), resolved.timeTo());
 
@@ -240,7 +244,8 @@ public class AskServiceImpl implements AskService {
         String finalAnswer = "";
         List<EvidenceVO> evidence;
         ClarifyStateVO needClarify = null;
-        String scopeMessage = null;
+        // §7.8：空串表示无需解释。只有第 4–7 条才给非空文案。
+        String scopeMessage = "";
 
         if (gaveConclusion && usedValid) {
             // 第 2 条：模型给了结论，且证据全部落在候选集内
@@ -299,12 +304,32 @@ public class AskServiceImpl implements AskService {
         List<String> keywords = strings(outputs.get("keywords"));
         List<String> queries = strings(outputs.get("queries")).stream()
                 .filter(query -> !query.isBlank())
+                .limit(MAX_QUERIES)
                 .toList();
         if (queries.isEmpty()) {
             queries = List.of(question);
         }
+        LocalDateTime[] range = parseTimeRange(outputs.get("time_from"), outputs.get("time_to"));
         return new Resolved(entities, keywords, queries, text(outputs.get("time_hint")),
-                parseTime(outputs.get("time_from")), parseTime(outputs.get("time_to")));
+                range[0], range[1]);
+    }
+
+    /**
+     * §7.1：空字段是合法的开区间；但只要有一个字段非空且解析不了，两个都置空。
+     * 不能留半开区间——「上周」解析失败却把 end 传下去，会把检索悄悄限制在一个错的区间里。
+     */
+    private LocalDateTime[] parseTimeRange(Object rawFrom, Object rawTo) {
+        String fromText = text(rawFrom).trim();
+        String toText = text(rawTo).trim();
+        LocalDateTime from = parseTime(rawFrom);
+        LocalDateTime to = parseTime(rawTo);
+        boolean fromBroken = !fromText.isEmpty() && from == null;
+        boolean toBroken = !toText.isEmpty() && to == null;
+        if (fromBroken || toBroken) {
+            log.warn("时间提示解析失败，按无时间提示处理：time_from={}, time_to={}", fromText, toText);
+            return new LocalDateTime[]{null, null};
+        }
+        return new LocalDateTime[]{from, to};
     }
 
     private record Resolved(List<String> entities,
@@ -432,7 +457,8 @@ public class AskServiceImpl implements AskService {
             byKey.putIfAbsent(candidate.key(), candidate);
         }
         List<Candidate> selected = new ArrayList<>();
-        for (String key : used) {
+        // 模型偶尔会重复引用同一个 id：去重，避免同一张证据卡渲染两次
+        for (String key : new LinkedHashSet<>(used)) {
             Candidate candidate = byKey.get(key);
             if (candidate != null) {
                 selected.add(candidate);
@@ -530,31 +556,13 @@ public class AskServiceImpl implements AskService {
         List<String> parts = new ArrayList<>();
         int shown = Math.min(rows.size(), SOURCE_MAX);
         for (int i = 0; i < shown; i++) {
-            parts.add(formatSource(rows.get(i)));
+            parts.add(SourceFormat.messageSource(rows.get(i)));
         }
         if (rows.size() > SOURCE_MAX) {
-            parts.add("等 " + rows.size() + " 条");
+            // spec §7.5「其余以等 N 条收尾」：N 是剩余条数，不是总数
+            parts.add("等 " + (rows.size() - SOURCE_MAX) + " 条");
         }
         return String.join("；", parts);
-    }
-
-    private static String formatSource(MessageLog row) {
-        List<String> parts = new ArrayList<>();
-        if (row.getChatId() != null) {
-            parts.add(isBlank(row.getChatName()) ? "群 " + row.getChatId() : row.getChatName().trim());
-        } else if (row.getSenderId() != null) {
-            parts.add("QQ " + row.getSenderId());
-        }
-        if (row.getSenderId() != null) {
-            parts.add(isBlank(row.getSenderName())
-                    ? String.valueOf(row.getSenderId()) : row.getSenderName().trim());
-        } else if (!isBlank(row.getSenderName())) {
-            parts.add(row.getSenderName().trim());
-        }
-        if (row.getCreatedAt() != null) {
-            parts.add(MM_DD.format(row.getCreatedAt()));
-        }
-        return String.join(" · ", parts);
     }
 
     private static EvidenceVO toEvidence(Candidate candidate, NoteSources sources) {

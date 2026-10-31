@@ -14,7 +14,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -44,8 +43,6 @@ import java.util.function.Supplier;
 public class RetrievalServiceImpl implements RetrievalService {
 
     private static final Logger log = LoggerFactory.getLogger(RetrievalServiceImpl.class);
-
-    private static final DateTimeFormatter MM_DD = DateTimeFormatter.ofPattern("MM-dd HH:mm");
 
     /** spec §7.3 的每路上限。 */
     static final int NOTE_SUBJECT_LIMIT = 200;
@@ -346,8 +343,7 @@ public class RetrievalServiceImpl implements RetrievalService {
             chatName = blankToNull(row.getSenderName());
         }
         String label = "QQ " + chatNumber + (chatName == null ? "" : " · " + chatName);
-        String when = row.getCreatedAt() == null ? "" : MM_DD.format(row.getCreatedAt());
-        String source = when.isEmpty() ? label : label + " · " + when;
+        String source = SourceFormat.messageSource(row);
         String quote = truncate(flatten(row.getContent()), QUOTE_LIMIT);
         return new Candidate("msg", row.getId(), label, quote, row.getCreatedAt(), source, quote);
     }
