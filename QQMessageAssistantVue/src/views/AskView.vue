@@ -26,6 +26,8 @@ interface Bubble {
   scope?: AskScope
   /** 答不出时在气泡下展示通道计数；成功作答不展示 */
   showScope?: boolean
+  /** 成功作答时后端附加的说明（如「未登记的联系人」），单独提示、不覆盖答案 */
+  scopeNotice?: string
 }
 
 const toast = useToast()
@@ -135,7 +137,8 @@ async function run(text: string, clarify?: { alias: string; senderId: number; fr
         scope,
       })
     } else if (!response.answer) {
-      // 第 4–7 条终态：后端 scope.message 才是用户该看到的话，缺省才退回旧文案
+      // 第 4–7 条终态：后端 scope.message 才是用户该看到的话，缺省才退回旧文案。
+      // 它已经作为气泡正文出现，所以不再重复挂 scopeNotice。
       const message = scope?.message?.trim()
       push({
         role: 'assistant',
@@ -149,11 +152,15 @@ async function run(text: string, clarify?: { alias: string; senderId: number; fr
         showScope: true,
       })
     } else {
+      // 成功作答也不吞掉后端说明（§7.2「未登记的联系人，按名字检索」），
+      // 但只做旁注，不改变答案本身；快照在气泡上，不跨轮共享。
+      const notice = scope?.message?.trim()
       push({
         role: 'assistant',
         text: response.answer,
         evidence: response.evidence,
         scope,
+        scopeNotice: notice || undefined,
       })
     }
   } catch (e) {
@@ -291,6 +298,9 @@ async function confirmUnknown(bubble: Bubble) {
       <li v-for="bubble in bubbles" :key="bubble.id" class="turn" :class="bubble.role">
         <p v-if="bubble.text" class="bubble">{{ bubble.text }}</p>
 
+        <!-- 成功作答时的附带说明：只做旁注，不顶替答案 -->
+        <p v-if="bubble.scopeNotice" class="scope-note">{{ bubble.scopeNotice }}</p>
+
         <div v-if="bubble.clarify" class="clarify">
           <p class="clarify-q">
             <template v-if="bubble.clarify.occurrences && bubble.clarify.occurrences > 0">
@@ -374,6 +384,7 @@ async function confirmUnknown(bubble: Bubble) {
                 v-if="expandableQuote(item)"
                 class="ev-quote"
                 :class="{ open: isQuoteOpen(quoteKey(bubble.id, item)) }"
+                :aria-hidden="!isQuoteOpen(quoteKey(bubble.id, item))"
               >{{ expandableQuote(item) }}</span>
               <span v-if="expandableQuote(item)" class="ev-quote-hint" aria-hidden="true">
                 {{ isQuoteOpen(quoteKey(bubble.id, item)) ? '收起原文' : '展开原文' }}
@@ -382,13 +393,13 @@ async function confirmUnknown(bubble: Bubble) {
           </li>
         </ul>
 
-        <!-- 答不出时补上各通道命中数；scope.message 已作为气泡文案呈现，不重复 -->
-        <div v-if="bubble.showScope && bubble.scope" class="scope">
-          <ul
-            v-if="channelCounts(bubble.scope).length"
-            class="scope-channels"
-            aria-label="各检索通道命中数"
-          >
+        <!-- 答不出时补上各通道命中数；scope.message 已作为气泡文案呈现，不重复。
+             所有通道都是 null 时整块不渲染，免得留下一条空发丝线。 -->
+        <div
+          v-if="bubble.showScope && bubble.scope && channelCounts(bubble.scope).length"
+          class="scope"
+        >
+          <ul class="scope-channels" aria-label="各检索通道命中数">
             <li
               v-for="channel in channelCounts(bubble.scope)"
               :key="channel.key"
@@ -439,6 +450,19 @@ async function confirmUnknown(bubble: Bubble) {
 }
 
 .scope-notice {
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+/* 成功作答时的附带说明：比顶部的能力提示更轻，像贴在气泡下的一张小纸条 */
+.scope-note {
+  align-self: start;
+  max-width: 86%;
+  padding: 6px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+  background: rgba(255, 253, 250, 0.6);
   color: var(--ink-3);
   font-size: 12px;
   line-height: 1.55;
