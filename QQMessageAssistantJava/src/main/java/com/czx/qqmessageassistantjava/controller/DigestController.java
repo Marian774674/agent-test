@@ -4,7 +4,9 @@ import com.czx.qqmessageassistantjava.common.FlexibleLocalDateTimeDeserializer;
 import com.czx.qqmessageassistantjava.common.Result;
 import com.czx.qqmessageassistantjava.service.AppSettingService;
 import com.czx.qqmessageassistantjava.service.ChatDigestService;
+import com.czx.qqmessageassistantjava.service.impl.DigestRefreshService;
 import com.czx.qqmessageassistantjava.vo.DigestItemVO;
+import com.czx.qqmessageassistantjava.vo.DigestRefreshVO;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -28,11 +30,21 @@ public class DigestController {
 
     private final ChatDigestService chatDigestService;
     private final AppSettingService appSettingService;
+    private final DigestRefreshService digestRefreshService;
 
     @Autowired
-    public DigestController(ChatDigestService chatDigestService, AppSettingService appSettingService) {
+    public DigestController(ChatDigestService chatDigestService,
+                            AppSettingService appSettingService,
+                            DigestRefreshService digestRefreshService) {
         this.chatDigestService = chatDigestService;
         this.appSettingService = appSettingService;
+        this.digestRefreshService = digestRefreshService;
+    }
+
+    @Operation(summary = "进首页时调用：消息够多或隔得够久就整理一次「上次整理到现在」")
+    @PostMapping("/refresh")
+    public Result<DigestRefreshVO> refresh() {
+        return Result.ok(digestRefreshService.refresh());
     }
 
     @Operation(summary = "上次离开之后的整理结果；since 缺省为 24 小时前")

@@ -20,6 +20,9 @@ const error = ref('')
 const digestEnabled = ref(false)
 const aliases = ref('')
 const focus = ref('')
+/** 进首页时的整理门槛：消息条数、间隔分钟数，任一超过就跑一次 */
+const minMessages = ref('100')
+const minMinutes = ref('60')
 const savingPrefs = ref(false)
 const prefsSaved = ref(false)
 
@@ -44,6 +47,8 @@ async function load(silent = false) {
     digestEnabled.value = settings.digest_enabled === '1'
     aliases.value = settings.owner_aliases ?? ''
     focus.value = settings.digest_focus_prompt ?? ''
+    minMessages.value = settings.digest_refresh_min_messages ?? '100'
+    minMinutes.value = settings.digest_refresh_min_minutes ?? '60'
   } catch (e) {
     const message = e instanceof Error ? e.message : '加载失败'
     if (silent) toast.error(message)
@@ -81,6 +86,8 @@ async function savePrefs() {
       digest_enabled: digestEnabled.value ? '1' : '0',
       owner_aliases: aliases.value.trim(),
       digest_focus_prompt: focus.value.trim(),
+      digest_refresh_min_messages: minMessages.value.trim() || '100',
+      digest_refresh_min_minutes: minMinutes.value.trim() || '60',
     })
     prefsSaved.value = true
     toast.success('整理偏好已保存')
@@ -154,6 +161,35 @@ function chatLabel(chat: ChatSetting) {
             />
             <p class="field-hint">写进整理提示词。留空就按「有时间地点的通知 &gt; 要我做的事 &gt; 提到我」取舍。</p>
           </div>
+
+          <div class="field-pair">
+            <div class="field">
+              <label for="digest-min-messages">多少条消息算一段</label>
+              <input
+                id="digest-min-messages"
+                v-model="minMessages"
+                class="input"
+                type="number"
+                min="1"
+                inputmode="numeric"
+              />
+            </div>
+            <div class="field">
+              <label for="digest-min-minutes">隔多久算一段（分钟）</label>
+              <input
+                id="digest-min-minutes"
+                v-model="minMinutes"
+                class="input"
+                type="number"
+                min="1"
+                inputmode="numeric"
+              />
+            </div>
+          </div>
+          <p class="field-hint">
+            每次进首页都会看一眼：这段时间收到超过 {{ minMessages || '?' }} 条消息，或距上次整理超过
+            {{ minMinutes || '?' }} 分钟，任一满足就整理一次；都没到就攒着，下次一起算。
+          </p>
 
           <button
             type="button"
@@ -285,6 +321,12 @@ function chatLabel(chat: ChatSetting) {
 
 .field {
   margin-top: 16px;
+}
+
+.field-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
 }
 
 .field label {
