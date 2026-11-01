@@ -66,66 +66,28 @@ function rejectField(message: string) {
   titleInput.value?.focus({ preventScroll: true })
 }
 
-/* ── 时间快捷块 ─────────────────────────────────────────────
- * 手机上点 datetime-local 要滚三列滚轮，多数场景其实只是
- * 「今晚」「明早」这几种。给四个常用档位，剩下的才走自定义。 */
+/* ── 截止时间 ───────────────────────────────────────────────
+ * 只留「自定义 + 不设时间」两个选项。原来的「今晚 20:00 / 明早 09:00 …」
+ * 四个快捷档位猜不准具体事情，又和「到期时提醒」叠在一起显得更乱；
+ * 默认就是自定义，点了直接弹系统选择器。 */
 
 const anchor = ref(new Date())
-const customOpen = ref(false)
 const pickerOpen = ref(false)
 
-function atTime(base: Date, hours: number, minutes = 0) {
-  const next = new Date(base)
-  next.setHours(hours, minutes, 0, 0)
-  return next
-}
-
-const presets = computed(() => {
-  const base = anchor.value
-
-  const tonight = atTime(base, 20)
-  const tonightRolled = tonight.getTime() <= base.getTime()
-  if (tonightRolled) tonight.setDate(tonight.getDate() + 1)
-
-  const tomorrowMorning = atTime(base, 9)
-  tomorrowMorning.setDate(tomorrowMorning.getDate() + 1)
-
-  const tomorrowEvening = atTime(base, 18)
-  tomorrowEvening.setDate(tomorrowEvening.getDate() + 1)
-
-  const nextMonday = atTime(base, 9)
-  const offset = (8 - nextMonday.getDay()) % 7 || 7
-  nextMonday.setDate(nextMonday.getDate() + offset)
-
-  return [
-    {
-      key: 'tonight',
-      label: `${tonightRolled ? '明晚' : '今晚'} 20:00`,
-      value: toDatetimeLocalValue(tonight),
-    },
-    { key: 'tomorrow-morning', label: '明早 09:00', value: toDatetimeLocalValue(tomorrowMorning) },
-    { key: 'tomorrow-evening', label: '明天 18:00', value: toDatetimeLocalValue(tomorrowEvening) },
-    { key: 'next-monday', label: '下周一 09:00', value: toDatetimeLocalValue(nextMonday) },
-  ]
-})
-
-function pickPreset(value: string) {
-  form.due = value
-  customOpen.value = false
+/** 一小时后、向上取整点：setMinutes(0) 会落到刚好几分钟后这种奇怪的值 */
+function defaultDue() {
+  const next = new Date(anchor.value.getTime() + 60 * 60 * 1000)
+  next.setHours(next.getHours() + (next.getMinutes() ? 1 : 0), 0, 0, 0)
+  return toDatetimeLocalValue(next)
 }
 
 function openCustom() {
-  customOpen.value = true
-  if (form.due) return
-  // 默认「一小时后、向上取整点」：直接 setMinutes(0) 会落到刚好几分钟后这种奇怪的值
-  const next = new Date(anchor.value.getTime() + 60 * 60 * 1000)
-  next.setHours(next.getHours() + (next.getMinutes() ? 1 : 0), 0, 0, 0)
-  form.due = toDatetimeLocalValue(next)
+  pickerOpen.value = true
+  if (!form.due) form.due = defaultDue()
 }
 
 function pickNone() {
   form.due = ''
-  customOpen.value = false
 }
 
 /* ── 自定义时间的显示 ───────────────────────────────────────
@@ -195,9 +157,8 @@ watch(
     form.content = memo?.content ?? ''
     form.importance = memo?.importance ?? 3
     form.category = memo?.category ?? '学业'
-    const dueValue = toDatetimeLocalValue(memo?.dueTime)
-    form.due = dueValue
-    customOpen.value = Boolean(dueValue) && !presets.value.some((item) => item.value === dueValue)
+    // 编辑已有备忘：按它自己的到期时间；新建或它本来就没时间：新建给个默认值，编辑保持空
+    form.due = memo ? toDatetimeLocalValue(memo.dueTime) : defaultDue()
     errors.title = ''
     errors.form = ''
   },
@@ -291,19 +252,9 @@ async function save() {
         <span class="frow-label">截止时间</span>
         <div class="presets">
           <button
-            v-for="preset in presets"
-            :key="preset.key"
             type="button"
             class="preset"
-            :aria-pressed="form.due === preset.value"
-            @click="pickPreset(preset.value)"
-          >
-            {{ preset.label }}
-          </button>
-          <button
-            type="button"
-            class="preset"
-            :aria-pressed="customOpen"
+            :aria-pressed="Boolean(form.due)"
             @click="openCustom"
           >
             自定义
@@ -318,7 +269,7 @@ async function save() {
           </button>
         </div>
         <button
-          v-if="customOpen"
+          v-if="form.due"
           type="button"
           class="time-line"
           aria-label="选择具体日期和时间"

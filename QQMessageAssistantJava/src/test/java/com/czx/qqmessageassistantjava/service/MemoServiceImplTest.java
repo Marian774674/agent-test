@@ -83,11 +83,11 @@ class MemoServiceImplTest {
         List<MemoReminderVO> plan = memoService.reminders(memo.getId());
 
         assertThat(plan).extracting(MemoReminderVO::getOffsetLabel)
-                .containsExactly("-1d@20:00", "-1h");
+                .containsExactly("-1d@20:00", "-1h", "截止");
         assertThat(plan).allMatch(r -> "PENDING".equals(r.getStatus()));
         // 前端直接显示中文，不再自己维护一张映射表
         assertThat(plan).extracting(MemoReminderVO::getOffsetText)
-                .containsExactly("前一天 20:00", "提前 1 小时");
+                .containsExactly("前一天 20:00", "提前 1 小时", "到期时");
     }
 
     @Test
@@ -98,9 +98,9 @@ class MemoServiceImplTest {
         Memo social = create("社交", 3, due);
 
         assertThat(memoService.reminders(study.getId())).extracting(MemoReminderVO::getOffsetLabel)
-                .containsExactly("-1d@20:00", "-1h");
+                .containsExactly("-1d@20:00", "-1h", "截止");
         assertThat(memoService.reminders(social.getId())).extracting(MemoReminderVO::getOffsetLabel)
-                .containsExactly("-2h", "-30m");
+                .containsExactly("-2h", "-30m", "截止");
     }
 
     @Test
@@ -113,18 +113,18 @@ class MemoServiceImplTest {
     @Test
     void patchRecalculatesRemindersWhenCategoryChanges() {
         Memo memo = create("健康", 3, LocalDateTime.now().plusDays(3));
-        assertThat(memoService.reminders(memo.getId())).hasSize(1);
+        assertThat(memoService.reminders(memo.getId())).hasSize(2);   // -30m + 到期
 
         MemoPatchRequest patch = new MemoPatchRequest();
         patch.setCategory("学业");
         memoService.patch(memo.getId(), patch);
 
-        // 旧的一档（-30m）被置为 CANCELLED 留档，新计划两档都是 PENDING
+        // 旧的两档（-30m、到期）被置为 CANCELLED 留档，新计划三档都是 PENDING
         List<MemoReminderVO> plan = memoService.reminders(memo.getId());
         assertThat(plan).filteredOn(r -> "PENDING".equals(r.getStatus()))
                 .extracting(MemoReminderVO::getOffsetLabel)
-                .containsExactly("-1d@20:00", "-1h");
-        assertThat(plan).filteredOn(r -> "CANCELLED".equals(r.getStatus())).hasSize(1);
+                .containsExactly("-1d@20:00", "-1h", "截止");
+        assertThat(plan).filteredOn(r -> "CANCELLED".equals(r.getStatus())).hasSize(2);
     }
 
     @Test
@@ -147,7 +147,7 @@ class MemoServiceImplTest {
         List<MemoReminderVO> plan = memoService.reminders(memo.getId());
         assertThat(plan).filteredOn(r -> "PENDING".equals(r.getStatus()))
                 .extracting(MemoReminderVO::getOffsetLabel)
-                .containsExactly("-1d@20:00", "-1h");
+                .containsExactly("-1d@20:00", "-1h", "截止");
         // 老档不删，只作废，便于回溯
         assertThat(plan).filteredOn(r -> "CANCELLED".equals(r.getStatus())).hasSize(3);
     }
@@ -160,7 +160,7 @@ class MemoServiceImplTest {
                 "学业", due.toString(), 4);
 
         assertThat(preview).extracting(ReminderPlanItemVO::getText)
-                .containsExactly("前一天 20:00", "提前 1 小时");
+                .containsExactly("前一天 20:00", "提前 1 小时", "到期时");
         assertThat(preview).extracting(ReminderPlanItemVO::getRemindAt)
                 .containsExactlyElementsOf(
                         memoService.reminders(create("学业", 4, due).getId()).stream()

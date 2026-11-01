@@ -7,6 +7,7 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
@@ -28,15 +29,21 @@ import java.util.regex.Pattern;
  * 当天 00:00。若按 00:00 直接减 24h/2h/30min，提醒全落在半夜——所以时刻部分为 00:00 时，
  * 锚点取当天 09:00。
  *
- * <p>生成规则：先丢过去的点，再合并靠得过近的点，再截断到 {@code maxPerMemo}；一条都没剩下
- * 但到期时间还在未来时，补一条「立即」，避免临到点才记的事全程没有提醒。
+ * <p><b>到期提醒</b>：只要到期时间还没过，每条备忘都会额外排一条「截止」——类型表管的是
+ * 「提前多久」，管不了「到点必须响一次」。它固定占用一个名额（{@code maxPerMemo} 不够时
+ * 优先砍离到期最远的提前档），纯日期备忘也落在锚点 09:00 而不是半夜 00:00。
+ *
+ * <p>生成规则：先丢过去的点，再合并靠得过近的点，再截断到 {@code maxPerMemo}，最后补「截止」。
  */
 public class ReminderPlanner {
 
     private static final Logger log = LoggerFactory.getLogger(ReminderPlanner.class);
 
-    /** 兜底档位：临近创建、其余档位都已过去时使用。 */
+    /** 旧数据里的兜底档位，现在不再生成，只在 {@link #describe} 里保留中文翻译。 */
     public static final String IMMEDIATE = "立即";
+
+    /** 到期那一条：除纯存档外，每条备忘都会有。 */
+    public static final String DUE = "截止";
 
     /** category 为空或不认识时用的键。 */
     public static final String DEFAULT_BUCKET = "其他";
@@ -75,28 +82,35 @@ public class ReminderPlanner {
         }
 
         LocalDateTime anchor = anchorOf(dueTime);
+        boolean dueInFuture = dueTime.isAfter(now);
+
         List<Planned> planned = new ArrayList<>();
         for (String label : labelsFor(category)) {
             LocalDateTime remindAt = compute(anchor, label);
-            if (remindAt == null) {
-                continue;
-            }
-            if (!remindAt.isAfter(now)) {
-                continue;                       // 过去的档位跳过，避免集中补发
+            if (remindAt == null || !remindAt.isAfter(now)) {
+                continue;                       // 写错的标签跳过，过去的档位跳过，避免集中补发
             }
             if (isTooCloseToKept(planned, remindAt)) {
                 continue;
             }
             planned.add(new Planned(label, remindAt));
-            if (planned.size() >= maxPerMemo) {
-                break;
-            }
         }
-        if (!planned.isEmpty()) {
-            return planned;
+
+        // 上限要给「截止」留一个位置；超了先砍离到期最远的提前档
+        int budget = dueInFuture ? Math.max(0, maxPerMemo - 1) : maxPerMemo;
+        if (planned.size() > budget) {
+            planned.sort(Comparator.comparing(Planned::remindAt));
+            planned = new ArrayList<>(planned.subList(planned.size() - budget, planned.size()));
         }
-        Planned immediate = immediateFor(dueTime, now);
-        return immediate == null ? List.of() : List.of(immediate);
+
+        if (dueInFuture) {
+            // 落在锚点：纯日期备忘的「到点」是 09:00，不是 00:00
+            planned.removeIf(kept -> isTooClose(kept.remindAt(), anchor));
+            planned.add(new Planned(DUE, anchor));
+        }
+
+        planned.sort(Comparator.comparing(Planned::remindAt));
+        return planned;
     }
 
     /** 时刻部分为 00:00（只给了日期）时锚点取当天 09:00，其余原样。 */
@@ -117,11 +131,14 @@ public class ReminderPlanner {
     }
 
     private boolean isTooCloseToKept(List<Planned> planned, LocalDateTime remindAt) {
+        return planned.stream().anyMatch(kept -> isTooClose(kept.remindAt(), remindAt));
+    }
+
+    private boolean isTooClose(LocalDateTime a, LocalDateTime b) {
         if (dedupeMinutes <= 0) {
             return false;
         }
-        return planned.stream().anyMatch(kept ->
-                Math.abs(Duration.between(kept.remindAt(), remindAt).toMinutes()) < dedupeMinutes);
+        return Math.abs(Duration.between(a, b).toMinutes()) < dedupeMinutes;
     }
 
     /** 标签算不出时间（配置写错）时返回 null，不抛异常——一条写错不该让备忘建不出来。 */
@@ -161,23 +178,6 @@ public class ReminderPlanner {
         return null;
     }
 
-    private static Planned immediateFor(LocalDateTime dueTime, LocalDateTime now) {
-        if (!dueTime.isAfter(now)) {
-            return null;
-        }
-        LocalDateTime remindAt = now.plusMinutes(1);
-        if (remindAt.isAfter(dueTime.minusMinutes(1))) {
-            remindAt = dueTime.minusMinutes(1);
-        }
-        if (!remindAt.isAfter(now)) {
-            remindAt = now.plusSeconds(1);
-        }
-        if (!remindAt.isAfter(now) || remindAt.isAfter(dueTime)) {
-            return null;
-        }
-        return new Planned(IMMEDIATE, remindAt);
-    }
-
     /** 标签 → 中文说明，给前端直接显示，避免前后端各维护一张映射表。 */
     public static String describe(String label) {
         if (label == null || label.isBlank()) {
@@ -185,6 +185,9 @@ public class ReminderPlanner {
         }
         if (IMMEDIATE.equals(label)) {
             return "马上";
+        }
+        if (DUE.equals(label)) {
+            return "到期时";
         }
 
         Matcher fixed = FIXED_TIME.matcher(label);

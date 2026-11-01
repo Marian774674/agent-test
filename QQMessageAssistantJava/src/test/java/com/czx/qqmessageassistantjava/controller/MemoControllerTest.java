@@ -39,11 +39,13 @@ class MemoControllerTest {
                         .param("dueTime", tomorrow + "T15:00:00")
                         .param("importance", "3"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.length()").value(2))
+                .andExpect(jsonPath("$.data.length()").value(3))
                 .andExpect(jsonPath("$.data[0].label").value("-1d@20:00"))
                 .andExpect(jsonPath("$.data[0].text").value("前一天 20:00"))
                 .andExpect(jsonPath("$.data[1].label").value("-1h"))
-                .andExpect(jsonPath("$.data[1].text").value("提前 1 小时"));
+                .andExpect(jsonPath("$.data[1].text").value("提前 1 小时"))
+                .andExpect(jsonPath("$.data[2].label").value("截止"))
+                .andExpect(jsonPath("$.data[2].text").value("到期时"));
     }
 
     @Test
@@ -55,9 +57,11 @@ class MemoControllerTest {
                         .param("dueTime", due.toString())
                         .param("importance", "4"))
                 .andExpect(status().isOk())
-                // 不认识的类型落到「其他」：只提前 1 小时，锚点是当天 09:00
-                .andExpect(jsonPath("$.data.length()").value(1))
-                .andExpect(jsonPath("$.data[0].remindAt").value(due + "T08:00:00"));
+                // 不认识的类型落到「其他」：提前 1 小时 + 到期，锚点是当天 09:00（不是 00:00）
+                .andExpect(jsonPath("$.data.length()").value(2))
+                .andExpect(jsonPath("$.data[0].remindAt").value(due + "T08:00:00"))
+                .andExpect(jsonPath("$.data[1].label").value("截止"))
+                .andExpect(jsonPath("$.data[1].remindAt").value(due + "T09:00:00"));
     }
 
     @Test
@@ -77,7 +81,9 @@ class MemoControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0].offsetLabel").value("-2h"))
                 .andExpect(jsonPath("$.data[0].offsetText").value("提前 2 小时"))
-                .andExpect(jsonPath("$.data[1].offsetText").value("提前 30 分钟"));
+                .andExpect(jsonPath("$.data[1].offsetText").value("提前 30 分钟"))
+                .andExpect(jsonPath("$.data[2].offsetLabel").value("截止"))
+                .andExpect(jsonPath("$.data[2].offsetText").value("到期时"));
     }
 
     @Test
@@ -87,9 +93,9 @@ class MemoControllerTest {
         mockMvc.perform(post("/api/memos/" + memo.getId() + "/replan"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.status == 'PENDING')].offsetLabel",
-                        org.hamcrest.Matchers.contains("-30m")))
+                        org.hamcrest.Matchers.contains("-30m", "截止")))
                 .andExpect(jsonPath("$.data[?(@.status == 'CANCELLED')]",
-                        org.hamcrest.Matchers.hasSize(1)));
+                        org.hamcrest.Matchers.hasSize(2)));
     }
 
     @Test

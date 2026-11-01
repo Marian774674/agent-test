@@ -28,8 +28,8 @@ import java.util.Map;
 @ConfigurationProperties(prefix = "app.reminder")
 public class ReminderPolicyProperties {
 
-    /** 一条备忘最多推几次。 */
-    private int maxPerMemo = 2;
+    /** 一条备忘最多推几次（含到期那一条）。 */
+    private int maxPerMemo = 3;
 
     /** 两个提醒点相差小于这个分钟数就合并成一条。 */
     private int dedupeMinutes = 20;

@@ -77,9 +77,10 @@ class AgentOpServiceTest {
         assertThat(memo.getCategory()).isEqualTo("其他");
         assertThat(memo.getStatus()).isEqualTo("ACTIVE");
         assertThat(result.getMessage()).startsWith("记下了：");
-        // 落不认识的分类 = 「其他」，计划按类型走：只提前 1 小时提醒一次
-        assertThat(result.getReminders()).hasSize(1);
+        // 落不认识的分类 = 「其他」，计划按类型走：提前 1 小时 + 到期各一次
+        assertThat(result.getReminders()).hasSize(2);
         assertThat(result.getReminders().get(0).getOffsetLabel()).isEqualTo("-1h");
+        assertThat(result.getReminders().get(1).getOffsetLabel()).isEqualTo("截止");
     }
 
     @Test

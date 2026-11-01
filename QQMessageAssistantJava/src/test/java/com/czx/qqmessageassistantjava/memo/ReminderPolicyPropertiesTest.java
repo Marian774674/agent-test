@@ -40,7 +40,7 @@ class ReminderPolicyPropertiesTest {
 
     @Test
     void limits_are_bound() {
-        assertThat(properties.getMaxPerMemo()).isEqualTo(2);
+        assertThat(properties.getMaxPerMemo()).isEqualTo(3);
         assertThat(properties.getDedupeMinutes()).isEqualTo(20);
     }
 
@@ -57,7 +57,7 @@ class ReminderPolicyPropertiesTest {
         assertThat(yaml.getProperty("app.reminder.policy[0].category")).isEqualTo("学业");
         assertThat(yaml.getProperty("app.reminder.policy[0].points[0]")).isEqualTo("-1d@20:00");
         assertThat(yaml.getProperty("app.reminder.policy[2].points[1]")).isEqualTo("-30m");
-        assertThat(yaml.getProperty("app.reminder.max-per-memo")).isEqualTo(2);
+        assertThat(yaml.getProperty("app.reminder.max-per-memo")).isEqualTo(3);
     }
 
     @Test
@@ -67,6 +67,6 @@ class ReminderPolicyPropertiesTest {
                         LocalDateTime.of(2026, 11, 1, 10, 0));
 
         assertThat(plan).extracting(ReminderPlanner.Planned::label)
-                .containsExactly("-1d@10:00", "@08:00");
+                .containsExactly("-1d@10:00", "@08:00", ReminderPlanner.DUE);
     }
 }
