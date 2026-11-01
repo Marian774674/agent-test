@@ -34,7 +34,9 @@
   --ink-3: #6b686e;
   --on-dark: #fbf8f3;
   --on-dark-2: rgba(251, 248, 243, 0.72);
-  --on-dark-3: rgba(251, 248, 243, 0.46);
+  /* 50% 而不是 46%：46% 压在 #17161a 上算出来 4.46:1，
+   * 差一点点够不到 AA，小字（11.5px 的微标签）尤其吃亏。 */
+  --on-dark-3: rgba(251, 248, 243, 0.5);
 
   /* 线：暖发丝线。1px 的暖褐比冷灰更像印刷的压痕 */
   --hairline: #e5e0d6;
@@ -677,18 +679,6 @@ a {
 .icon-btn:active {
   background: var(--surface);
   color: var(--ink);
-}
-
-/* 深色面上的按钮 */
-.on-dark .btn,
-.btn-on-dark {
-  border-color: rgba(255, 255, 255, 0.42);
-  background: transparent;
-  color: #fff;
-}
-
-.btn-on-dark:active {
-  background: rgba(255, 255, 255, 0.08);
 }
 
 /* ── 分段控制 ─────────────────────────────────────────────── */

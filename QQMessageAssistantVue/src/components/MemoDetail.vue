@@ -2,12 +2,19 @@
 import { computed, ref, watch } from 'vue'
 import { BellOff } from 'lucide-vue-next'
 import Sheet from '@/components/Sheet.vue'
+import SheetHead from '@/components/SheetHead.vue'
 import ImportanceMark from '@/components/ImportanceMark.vue'
-import StatusPill from '@/components/StatusPill.vue'
 import { listMemoHistory, listReminders, patchMemo } from '@/api/memos'
 import type { Memo, MemoChangeLog, MemoReminder } from '@/api/types'
 import { useToast } from '@/composables/useToast'
-import { formatDateTime } from '@/utils/datetime'
+import {
+  dayDiff,
+  formatDateTime,
+  formatHeadDate,
+  formatTime,
+  parseLocal,
+  relativeUntil,
+} from '@/utils/datetime'
 import { importanceLabel, memoStatusMeta, reminderStatusMeta } from '@/utils/meta'
 
 const props = defineProps<{
@@ -48,6 +55,34 @@ const statusMeta = computed(() => memoStatusMeta(props.memo?.status ?? ''))
 const pendingCount = computed(
   () => reminders.value.filter((reminder) => reminder.status === 'PENDING').length,
 )
+
+/* 截止时间是这张抽屉里唯一该被放大看的东西：
+ * 日期走衬线、时间和编辑抽屉里那行保持同一套写法（日 · 时），
+ * 下面补一句相对时间，省得用户自己算「还有多久」。
+ * 星期拆出来单独排小字——和日期同号会变成「11月2日 周一」一坨。 */
+const dueParts = computed(() => {
+  const date = parseLocal(props.memo?.dueTime)
+  if (!date) return null
+  const days = dayDiff(date, new Date())
+  const relative = days === 0 ? '今天' : days === 1 ? '明天' : days === 2 ? '后天' : ''
+  if (relative) return { day: relative, week: '', time: formatTime(date) }
+  const [day, week] = formatHeadDate(date).split(' ')
+  return { day, week, time: formatTime(date) }
+})
+
+const dueRelative = computed(() => relativeUntil(props.memo?.dueTime))
+
+/* 空态文案不能靠猜。原来那句「未设置截止时间，或重要性为 1 级」
+ * 在「有截止时间、重要性 2 级、但没排上提醒」的备忘上自相矛盾，
+ * 干脆按实际情况分开说。 */
+const emptyPlanText = computed(() => {
+  const memo = props.memo
+  if (!memo) return '没有提醒'
+  if (!memo.dueTime) return '没设截止时间，这条不会提醒'
+  if (memo.importance <= 1) return '1 级只存档，不排提醒'
+  if (isClosed.value) return '已结束，剩下的提醒都撤了'
+  return '这条没排上提醒'
+})
 
 function offsetLabel(label: string) {
   return OFFSET_LABELS[label] ?? label
@@ -184,44 +219,52 @@ async function cancelMemo() {
   <Sheet
     :open="open"
     :title="memo?.title ?? '备忘'"
-    :description="memo?.category ? `${memo.category} · 记录于 ${formatDateTime(memo.createdAt)}` : undefined"
     :vt-name="vtName"
     :instant="instant"
     @close="emit('close')"
   >
+    <template #head>
+      <SheetHead
+        :title="memo?.title ?? '备忘'"
+        :stamp="memo?.category ?? undefined"
+        :meta="memo ? `记录于 ${formatDateTime(memo.createdAt)}` : ''"
+      />
+    </template>
+
     <template v-if="memo">
-      <div class="chips">
-        <ImportanceMark :importance="memo.importance" inverse />
-        <StatusPill :label="statusMeta.label" :tone="statusMeta.tone" />
+      <div class="meta">
+        <ImportanceMark :importance="memo.importance" />
+        <span class="meta-state" :class="`tone-${statusMeta.tone}`">
+          <i class="dot" aria-hidden="true" />
+          {{ statusMeta.label }}
+        </span>
       </div>
 
       <p v-if="memo.content" class="content">{{ memo.content }}</p>
 
-      <div class="facts">
-        <div class="fact">
-          <span class="fact-label">截止时间</span>
-          <span class="fact-value">{{ memo.dueTime ? formatDateTime(memo.dueTime) : '未设置' }}</span>
-        </div>
-        <div class="fact">
-          <span class="fact-label">状态</span>
-          <span class="fact-value">{{ statusMeta.label }}</span>
-        </div>
-        <div class="fact">
-          <span class="fact-label">记录于</span>
-          <span class="fact-value">{{ formatDateTime(memo.createdAt) }}</span>
-        </div>
-      </div>
+      <section class="blk" aria-label="截止时间">
+        <h3 class="blk-title"><span>截止时间</span></h3>
+        <p v-if="dueParts" class="due">
+          <span class="num">{{ dueParts.day }}</span>
+          <span v-if="dueParts.week" class="due-week">{{ dueParts.week }}</span>
+          <span class="due-dot" aria-hidden="true" />
+          <span class="num">{{ dueParts.time }}</span>
+        </p>
+        <p v-else class="blk-none">没设截止时间，也不会提醒</p>
+        <p v-if="dueParts && dueRelative && !isClosed" class="due-rel">{{ dueRelative }}</p>
+      </section>
 
-      <section class="plan" aria-labelledby="plan-title">
-        <h3 id="plan-title" class="plan-title">
+      <!-- 没有截止时间就不可能有提醒，整段省掉，免得同一句话连说两遍 -->
+      <section v-if="dueParts || reminders.length" class="blk" aria-labelledby="plan-title">
+        <h3 id="plan-title" class="blk-title">
           <span>提醒计划</span>
-          <span v-if="pendingCount" class="plan-count num">还剩 {{ pendingCount }} 次</span>
+          <span v-if="pendingCount" class="blk-count num">还剩 {{ pendingCount }} 次</span>
         </h3>
 
-        <p v-if="loadingReminders" class="plan-empty">正在读取…</p>
-        <p v-else-if="!reminders.length" class="plan-empty">
+        <p v-if="loadingReminders" class="blk-none">正在读取…</p>
+        <p v-else-if="!reminders.length" class="blk-none">
           <BellOff :size="14" aria-hidden="true" />
-          <span>没有提醒：未设置截止时间，或重要性为 1 级。</span>
+          <span>{{ emptyPlanText }}</span>
         </p>
         <ul v-else class="reminders">
           <li
@@ -230,29 +273,31 @@ async function cancelMemo() {
             class="reminder"
             :class="{ off: reminder.status === 'CANCELLED' }"
           >
-            <span class="reminder-offset">{{ offsetLabel(reminder.offsetLabel) }}</span>
-            <span class="reminder-at num">{{ formatDateTime(reminder.remindAt) }}</span>
+            <span class="reminder-when">
+              <span class="reminder-offset">{{ offsetLabel(reminder.offsetLabel) }}</span>
+              <span class="reminder-at num">{{ formatDateTime(reminder.remindAt) }}</span>
+            </span>
             <span class="reminder-state">{{ reminderStatusMeta(reminder.status).label }}</span>
           </li>
         </ul>
       </section>
 
-      <section class="plan" aria-labelledby="history-title">
-        <h3 id="history-title" class="plan-title">
+      <section class="blk" aria-labelledby="history-title">
+        <h3 id="history-title" class="blk-title">
           <span>变更记录</span>
-          <span v-if="history.length" class="plan-count num">{{ history.length }} 次</span>
+          <span v-if="history.length" class="blk-count num">{{ history.length }} 次</span>
         </h3>
 
-        <p v-if="loadingHistory" class="plan-empty">正在读取…</p>
-        <p v-else-if="!history.length" class="plan-empty">
-          <span>还没改过。</span>
-        </p>
+        <p v-if="loadingHistory" class="blk-none">正在读取…</p>
+        <p v-else-if="!history.length" class="blk-none"><span>还没改过。</span></p>
         <ul v-else class="changes">
           <li v-for="entry in history" :key="entry.id" class="change">
-            <span class="change-source" :class="entry.source === 'AGENT' ? 'from-ai' : ''">
-              {{ entry.source === 'AGENT' ? 'QQ 里改的' : '手动改的' }}
+            <span class="change-body">
+              <span class="change-source" :class="{ ai: entry.source === 'AGENT' }">
+                {{ entry.source === 'AGENT' ? 'QQ 里改的' : '手动改的' }}
+              </span>
+              <span class="change-text">{{ changeText(entry) }}</span>
             </span>
-            <span class="change-text">{{ changeText(entry) }}</span>
             <span class="change-at num">{{ formatDateTime(entry.createdAt) }}</span>
           </li>
         </ul>
@@ -287,163 +332,199 @@ async function cancelMemo() {
       <button
         v-if="!isClosed"
         type="button"
-        class="btn btn-on-dark"
+        class="btn btn-primary"
         :disabled="busy"
         @click="markDone"
       >
         标记完成
       </button>
-      <button v-else type="button" class="btn btn-on-dark" @click="emit('close')">关闭</button>
+      <!-- 只有「标记完成」是实心：已结束的备忘上，关闭不该比编辑更抢眼 -->
+      <button v-else type="button" class="btn btn-ghost" @click="emit('close')">关闭</button>
     </template>
   </Sheet>
 </template>
 
 <style scoped>
-.chips {
+/* 报头交给 SheetHead，这里只管正文。
+
+   ── 署名行：重要性竖条 + 状态 ─────────────────────────────
+   状态不用胶囊。纸面上一块浅色药丸会跳出来抢注意力，
+   而这里的状态本来就该和重要性的五根竖条同属「微标注」。 */
+.meta {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-bottom: 14px;
+  gap: 12px;
 }
 
+.meta-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 12px;
+  border-left: 1px solid var(--rule);
+  color: var(--ink-2);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.meta-state .dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.meta-state.tone-warn {
+  color: var(--warn);
+}
+
+.meta-state.tone-danger {
+  color: var(--danger);
+}
+
+.meta-state.tone-quiet {
+  color: var(--ink-3);
+}
+
+/* 正文不铺底板：纸面上再压一块更白的块，等于凭空多一层边框。
+   一根左侧细线就够把它和下面的信息分开。 */
 .content {
-  margin-bottom: 14px;
-  padding: 14px 16px;
-  border-radius: var(--r-md);
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--on-dark);
+  margin: 14px 0 0;
+  padding-left: 13px;
+  border-left: 1px solid var(--rule);
+  color: var(--ink-2);
   font-size: 14.5px;
-  line-height: 1.65;
+  line-height: 1.7;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-/*
- * 抽屉是深色面，里面不要再放一块纯白卡——
- * 黑底上突然一块 100% 白，亮度差太大，眼睛会被那块白吸住。
- * 改成 5.5% 白的半透明板 + 发丝线，信息还在，但整块面板是一个整体。
- */
-.facts {
-  display: grid;
-  gap: 1px;
-  overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: var(--r-md);
-  background: rgba(255, 255, 255, 0.055);
+/* ── 小节 ──────────────────────────────────────────────── */
+.blk {
+  margin-top: 22px;
 }
 
-.fact {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 14px;
-  color: var(--on-dark);
-}
-
-.fact + .fact {
-  border-top: 1px solid rgba(255, 255, 255, 0.085);
-}
-
-.fact-label {
-  color: var(--on-dark-3);
-  font-size: 12px;
-  letter-spacing: 0.02em;
-  flex: none;
-}
-
-.fact-value {
-  font-size: 13.5px;
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-}
-
-.plan {
-  margin-top: 18px;
-}
-
-/* 抽屉里的小节标题也走「微标签」：和页面上的栏目线同一套字号与字距，
- * 只是颜色换成深色面上的次级白——换面不换语言。 */
-.plan-title {
+/* 小节标题走「微标签 + 引导线」，和页面上的栏目线同一套字号与字距 */
+.blk-title {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 10px;
-  color: var(--on-dark-3);
+  margin-bottom: 9px;
+  color: var(--ink-3);
   font-size: 10.5px;
   font-weight: 600;
   letter-spacing: 0.16em;
 }
 
-.plan-title::after {
+.blk-title::after {
   content: '';
+  order: 1;
   flex: 1;
   min-width: 10px;
   height: 1px;
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--rule);
 }
 
-.plan-count {
+.blk-count {
   order: 2;
-  color: var(--on-dark-2);
+  color: var(--ink-2);
   font-family: var(--font-display);
   font-size: 13px;
   font-weight: 400;
   letter-spacing: 0;
-  font-variant-numeric: lining-nums tabular-nums;
 }
 
-.plan-empty {
+.blk-none {
   display: flex;
   align-items: center;
   gap: 6px;
-  color: var(--on-dark-3);
-  font-size: 12.5px;
+  color: var(--ink-3);
+  font-size: 13px;
+  line-height: 1.55;
 }
 
-.reminders {
-  display: grid;
-  gap: 1px;
+/* 截止时间是这张抽屉里唯一该被放大看的东西：
+   衬线、和编辑抽屉里那行同一套写法（日 · 时），下面补一句相对时间。 */
+.due {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 9px;
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 400;
+  line-height: 1.2;
+  letter-spacing: -0.005em;
+}
+
+/* 星期用无衬线小字：中文衬线在 11px 会糊成一团，这条规矩和正文一样 */
+.due-week {
+  align-self: center;
+  color: var(--ink-3);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.due-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 1px;
+  background: var(--dot);
+  transform: translateY(-4px);
+}
+
+.due-rel {
+  margin-top: 7px;
+  color: var(--ink-3);
+  font-size: 11.5px;
+}
+
+/* 提醒与变更都不套圆角容器：这里本来就是一张「清单」，
+   发丝线分隔已经够用，再包一层就回到旧版那种卡片堆叠。 */
+.reminders,
+.changes {
   margin: 0;
   padding: 0;
   list-style: none;
-  overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: var(--r-md);
-  background: rgba(255, 255, 255, 0.055);
 }
 
 .reminder {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 2px 12px;
-  padding: 10px 14px;
-  color: var(--ink);
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
 }
 
 .reminder + .reminder {
   border-top: 1px solid var(--hairline);
 }
 
+.reminder-when {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-width: 0;
+}
+
 .reminder-offset {
-  font-size: 13.5px;
+  color: var(--ink);
+  font-size: 13px;
 }
 
 .reminder-at {
-  color: var(--ink-2);
-  font-size: 12.5px;
-  text-align: right;
+  color: var(--ink-3);
+  font-size: 12px;
 }
 
 .reminder-state {
-  grid-column: 1 / -1;
-  color: var(--ink-3);
+  flex: none;
+  color: var(--ink-2);
   font-size: 11.5px;
-}
-
-.reminder.off {
-  color: var(--ink-3);
+  white-space: nowrap;
 }
 
 .reminder.off .reminder-offset,
@@ -452,63 +533,62 @@ async function cancelMemo() {
   text-decoration: line-through;
 }
 
-.changes {
-  display: grid;
-  gap: 1px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: var(--r-md);
-  background: rgba(255, 255, 255, 0.055);
+.reminder.off .reminder-state {
+  color: var(--ink-3);
 }
 
 .change {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: baseline;
-  gap: 2px 8px;
-  padding: 10px 14px;
-  color: var(--ink);
+  gap: 0 10px;
+  padding: 8px 0;
 }
 
 .change + .change {
   border-top: 1px solid var(--hairline);
 }
 
+.change-body {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  min-width: 0;
+}
+
+/* 谁改的不用胶囊也不用小方块，改字色就够了：
+   纸底上一枚 3px 的方点会像一颗掉在行首的碎屑。 */
 .change-source {
-  padding: 1px 7px;
-  border-radius: var(--r-pill);
-  background: #f0f0f1;
-  color: var(--ink-2);
+  color: var(--ink-3);
   font-size: 11px;
+  letter-spacing: 0.02em;
   white-space: nowrap;
 }
 
-.change-source.from-ai {
-  background: rgba(229, 56, 127, 0.12);
-  color: #a82457;
+.change-source.ai {
+  color: var(--accent-ink);
 }
 
 .change-text {
-  font-size: 13.5px;
+  color: var(--ink);
+  font-size: 13px;
   overflow-wrap: anywhere;
 }
 
 .change-at {
-  grid-column: 1 / -1;
   color: var(--ink-3);
   font-size: 11.5px;
-  text-align: right;
+  white-space: nowrap;
 }
 
 .confirm {
-  margin-top: 16px;
-  padding: 14px;
-  border-radius: var(--r-md);
-  background: rgba(191, 58, 43, 0.16);
-  color: #ffc3ba;
+  margin-top: 20px;
+  padding: 13px 14px;
+  border: 1px solid rgba(191, 58, 43, 0.22);
+  border-radius: var(--r-sm);
+  background: var(--danger-wash);
+  color: var(--danger);
   font-size: 12.5px;
   line-height: 1.55;
 }
@@ -517,16 +597,35 @@ async function cancelMemo() {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 10px;
+  margin-top: 11px;
+}
+
+.confirm .btn-ghost {
+  color: var(--ink-2);
+}
+
+.confirm .btn-ghost:active {
+  background: rgba(46, 38, 26, 0.06);
+}
+
+/* 确认区在红色浅底上，btn-danger 自带的浅红底会糊成一片，这里给实心 */
+.confirm .btn-danger {
+  border-color: transparent;
+  background: var(--danger);
+  color: #fff;
 }
 
 .danger-link {
-  margin-top: 18px;
+  margin-top: 22px;
   padding: 6px 0;
   border: 0;
   background: transparent;
-  color: rgba(255, 140, 128, 0.9);
+  color: var(--danger);
   font-size: 12.5px;
   cursor: pointer;
+}
+
+.danger-link:active {
+  color: #a32f22;
 }
 </style>

@@ -140,7 +140,6 @@ const preview = computed(() => {
   <Sheet
     :open="open"
     nested
-    tone="light"
     height="88%"
     title="选择时间"
     :description="preview"

@@ -454,8 +454,7 @@ async function changeFrequency(value: Frequency) {
 
     <Sheet
       :open="sheetOpen"
-      tone="light"
-      :title="editing ? '修改事实' : '添加事实'"
+        :title="editing ? '修改事实' : '添加事实'"
       description="比如学号、导员电话、常用地址。机器人下次对话就会用上。"
       @close="sheetOpen = false"
     >
@@ -518,8 +517,7 @@ async function changeFrequency(value: Frequency) {
 
     <Sheet
       :open="contactSheetOpen"
-      tone="light"
-      title="认一个人"
+        title="认一个人"
       description="记下称呼和 QQ 号，以后问起这个人就不用再猜。"
       @close="contactSheetOpen = false"
     >

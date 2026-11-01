@@ -2,17 +2,13 @@
 import { computed } from 'vue'
 import { importanceLabel } from '@/utils/meta'
 
-const props = defineProps<{ importance: number; inverse?: boolean }>()
+const props = defineProps<{ importance: number }>()
 
 const label = computed(() => importanceLabel(props.importance))
 </script>
 
 <template>
-  <span
-    class="imp"
-    :class="{ inverse }"
-    :aria-label="`重要性 ${importance} 级：${label}`"
-  >
+  <span class="imp" :aria-label="`重要性 ${importance} 级：${label}`">
     <span class="bars" aria-hidden="true">
       <i v-for="n in 5" :key="n" :class="{ on: n <= importance }" />
     </span>
@@ -57,17 +53,5 @@ const label = computed(() => importanceLabel(props.importance))
 
 .label {
   letter-spacing: 0.01em;
-}
-
-.imp.inverse {
-  color: var(--on-dark-2);
-}
-
-.imp.inverse .bars i {
-  background: rgba(255, 255, 255, 0.22);
-}
-
-.imp.inverse .bars i.on {
-  background: #fff;
 }
 </style>
