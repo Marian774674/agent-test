@@ -1,3 +1,7 @@
 
 # 发送桥运行时幂等状态（进程内生成，不入库）
 QQMessageAssistantPython/send_bridge/data/
+
+# 智能检索的工作区与模型文件（本地生成，不入库）
+.superpowers/
+QQMessageAssistantJava/models/

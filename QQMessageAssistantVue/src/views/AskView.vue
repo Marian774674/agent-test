@@ -3,7 +3,13 @@ import { computed, nextTick, ref } from 'vue'
 import { ArrowUp, MessageCircleQuestion } from 'lucide-vue-next'
 import EmptyState from '@/components/EmptyState.vue'
 import PageHead from '@/components/PageHead.vue'
-import { ask, type ClarifyCandidate, type ClarifyState, type Evidence } from '@/api/ask'
+import {
+  ask,
+  type AskScope,
+  type ClarifyCandidate,
+  type ClarifyState,
+  type Evidence,
+} from '@/api/ask'
 import { useToast } from '@/composables/useToast'
 
 interface Bubble {
@@ -16,6 +22,12 @@ interface Bubble {
   clarify?: ClarifyState
   /** 触发这次反问的原问题：认完人要用它重问，存在气泡上而不是靠下标回找 */
   question?: string
+  /** 这一次作答自己的检索范围，多轮之间互不影响 */
+  scope?: AskScope
+  /** 答不出时在气泡下展示通道计数；成功作答不展示 */
+  showScope?: boolean
+  /** 成功作答时后端附加的说明（如「未登记的联系人」），单独提示、不覆盖答案 */
+  scopeNotice?: string
 }
 
 const toast = useToast()
@@ -39,6 +51,58 @@ const EVIDENCE_LABELS: Record<Evidence['type'], string> = {
   file: '文件',
 }
 
+/** 通道展示名与固定顺序；值为 null 的通道不展示，0 照常展示 */
+const CHANNEL_LABELS: Array<[key: string, label: string]> = [
+  ['note', '结构化事实'],
+  ['msg-person', '对话记录'],
+  ['msg-mention', '提及'],
+  ['msg-lexical', '全文'],
+  ['msg-semantic', '语义'],
+  ['memo', '备忘'],
+  ['file', '文件'],
+]
+
+/** 哪些证据的原文被展开了；键带气泡 id，多轮之间不会串 */
+const openQuotes = ref<Record<string, boolean>>({})
+
+function quoteKey(bubbleId: number, item: Evidence) {
+  return `${bubbleId}:${item.type}:${item.id}`
+}
+
+/** 原文存在且与 content 不同才值得折叠；相同就不做一个多余的展开器 */
+function expandableQuote(item: Evidence): string | null {
+  const quote = item.quote?.trim()
+  if (!quote) return null
+  return quote === item.content?.trim() ? null : quote
+}
+
+function isQuoteOpen(key: string) {
+  return !!openQuotes.value[key]
+}
+
+function toggleQuote(key: string) {
+  openQuotes.value[key] = !openQuotes.value[key]
+}
+
+function channelCounts(scope: AskScope) {
+  return CHANNEL_LABELS.flatMap(([key, label]) => {
+    const value = scope.channels?.[key]
+    return typeof value === 'number' ? [{ key, label, value }] : []
+  })
+}
+
+/** 顶部提示只反映最近一次作答；更早的 scope 留在各自气泡上 */
+const latestScope = computed<AskScope | null>(() => {
+  for (let i = bubbles.value.length - 1; i >= 0; i -= 1) {
+    const scope = bubbles.value[i].scope
+    if (scope) return scope
+  }
+  return null
+})
+
+const semanticDisabled = computed(() => latestScope.value?.semantic === false)
+const lagCount = computed(() => latestScope.value?.lag ?? 0)
+
 function push(bubble: Omit<Bubble, 'id'>) {
   bubbles.value.push({ ...bubble, id: ++seq })
 }
@@ -53,27 +117,50 @@ async function run(text: string, clarify?: { alias: string; senderId: number; fr
   loading.value = true
   try {
     const response = await ask(text, clarify)
+    // 每轮响应自带 scope，挂在产出它的气泡上，绝不跨轮复用
+    const scope = response.scope
     if (response.needClarify) {
       push({
         role: 'assistant',
         text: '',
         clarify: response.needClarify,
         question: text,
+        scope,
       })
     } else if (response.degraded) {
+      // 结论不可追溯：保持原行为，只列证据，不拿 scope.message 覆盖
       push({
         role: 'assistant',
         text: '没找到能对上的原文，只列了候选。',
         degraded: true,
         evidence: response.evidence,
+        scope,
       })
-    } else if (!response.answer && !response.evidence?.length) {
-      push({ role: 'assistant', text: '翻了一遍，没有关于这件事的记录。' })
-    } else {
+    } else if (!response.answer) {
+      // 第 4–7 条终态：后端 scope.message 才是用户该看到的话，缺省才退回旧文案。
+      // 它已经作为气泡正文出现，所以不再重复挂 scopeNotice。
+      const message = scope?.message?.trim()
       push({
         role: 'assistant',
-        text: response.answer || '没有直接结论，下面是翻到的原文。',
+        text:
+          message ||
+          (response.evidence?.length
+            ? '没有直接结论，下面是翻到的原文。'
+            : '翻了一遍，没有关于这件事的记录。'),
         evidence: response.evidence,
+        scope,
+        showScope: true,
+      })
+    } else {
+      // 成功作答也不吞掉后端说明（§7.2「未登记的联系人，按名字检索」），
+      // 但只做旁注，不改变答案本身；快照在气泡上，不跨轮共享。
+      const notice = scope?.message?.trim()
+      push({
+        role: 'assistant',
+        text: response.answer,
+        evidence: response.evidence,
+        scope,
+        scopeNotice: notice || undefined,
       })
     }
   } catch (e) {
@@ -155,6 +242,16 @@ async function confirmUnknown(bubble: Bubble) {
       sub="只在聊天记录、事实、备忘和文件里找答案；找不到就说找不到，不编。"
     />
 
+    <!-- 顶部只反映最近一次作答的检索状态；多轮里旧答复的 scope 留在各自气泡上 -->
+    <div v-if="semanticDisabled || lagCount > 0" class="scope-notices">
+      <p v-if="semanticDisabled" class="scope-notice">
+        语义检索未启用（模型未就绪），当前只做全文与结构化检索
+      </p>
+      <p v-if="lagCount > 0" class="scope-notice">
+        有 {{ lagCount }} 条新消息尚未建立语义索引
+      </p>
+    </div>
+
     <form class="ask" @submit.prevent="submit">
       <MessageCircleQuestion
         :size="17"
@@ -201,9 +298,17 @@ async function confirmUnknown(bubble: Bubble) {
       <li v-for="bubble in bubbles" :key="bubble.id" class="turn" :class="bubble.role">
         <p v-if="bubble.text" class="bubble">{{ bubble.text }}</p>
 
+        <!-- 成功作答时的附带说明：只做旁注，不顶替答案 -->
+        <p v-if="bubble.scopeNotice" class="scope-note">{{ bubble.scopeNotice }}</p>
+
         <div v-if="bubble.clarify" class="clarify">
           <p class="clarify-q">
-            你说的「{{ bubble.clarify.alias }}」是哪一个？
+            <template v-if="bubble.clarify.occurrences && bubble.clarify.occurrences > 0">
+              记录里出现过 {{ bubble.clarify.occurrences }} 次，能说说是谁吗？
+            </template>
+            <template v-else>
+              你说的「{{ bubble.clarify.alias }}」是哪一个？
+            </template>
           </p>
 
           <div v-if="bubble.clarify.candidates.length" class="choices">
@@ -258,13 +363,53 @@ async function confirmUnknown(bubble: Bubble) {
 
         <ul v-if="bubble.evidence?.length" class="evidence">
           <li v-for="item in bubble.evidence" :key="`${item.type}:${item.id}`" class="ev">
-            <div class="ev-head">
-              <span class="ev-type">{{ EVIDENCE_LABELS[item.type] ?? item.type }}</span>
-              <span class="ev-label">{{ item.label }}</span>
-            </div>
-            <p class="ev-body">{{ item.content }}</p>
+            <!-- 有原文时整张证据卡就是展开按钮：鼠标点卡片、键盘 Tab + Enter 都能展开 -->
+            <component
+              :is="expandableQuote(item) ? 'button' : 'div'"
+              :type="expandableQuote(item) ? 'button' : undefined"
+              class="ev-card"
+              :class="{ 'ev-card-toggle': !!expandableQuote(item) }"
+              :aria-expanded="
+                expandableQuote(item) ? isQuoteOpen(quoteKey(bubble.id, item)) : undefined
+              "
+              @click="expandableQuote(item) && toggleQuote(quoteKey(bubble.id, item))"
+            >
+              <span class="ev-head">
+                <span class="ev-type">{{ EVIDENCE_LABELS[item.type] ?? item.type }}</span>
+                <span class="ev-label">{{ item.label }}</span>
+              </span>
+              <span v-if="item.source" class="ev-source">{{ item.source }}</span>
+              <span class="ev-body">{{ item.content }}</span>
+              <span
+                v-if="expandableQuote(item)"
+                class="ev-quote"
+                :class="{ open: isQuoteOpen(quoteKey(bubble.id, item)) }"
+                :aria-hidden="!isQuoteOpen(quoteKey(bubble.id, item))"
+              >{{ expandableQuote(item) }}</span>
+              <span v-if="expandableQuote(item)" class="ev-quote-hint" aria-hidden="true">
+                {{ isQuoteOpen(quoteKey(bubble.id, item)) ? '收起原文' : '展开原文' }}
+              </span>
+            </component>
           </li>
         </ul>
+
+        <!-- 答不出时补上各通道命中数；scope.message 已作为气泡文案呈现，不重复。
+             所有通道都是 null 时整块不渲染，免得留下一条空发丝线。 -->
+        <div
+          v-if="bubble.showScope && bubble.scope && channelCounts(bubble.scope).length"
+          class="scope"
+        >
+          <ul class="scope-channels" aria-label="各检索通道命中数">
+            <li
+              v-for="channel in channelCounts(bubble.scope)"
+              :key="channel.key"
+              class="scope-channel"
+            >
+              <span class="scope-channel-label">{{ channel.label }}</span>
+              <span class="scope-channel-count num">{{ channel.value }}</span>
+            </li>
+          </ul>
+        </div>
       </li>
 
       <li v-if="loading" class="turn assistant">
@@ -286,6 +431,41 @@ async function confirmUnknown(bubble: Bubble) {
   flex: 1;
   align-content: center;
   padding-bottom: 48px;
+}
+
+/* ── 检索能力提示 ─────────────────────────────────────────── */
+
+/*
+ * 只是说明「这次是怎么检索的」，不打断提问；用一条发丝线压住的纸底，
+ * 和输入条共用材质，但更轻。
+ */
+.scope-notices {
+  display: grid;
+  gap: 3px;
+  margin-bottom: 14px;
+  padding: 8px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  background: rgba(255, 253, 250, 0.6);
+}
+
+.scope-notice {
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+/* 成功作答时的附带说明：比顶部的能力提示更轻，像贴在气泡下的一张小纸条 */
+.scope-note {
+  align-self: start;
+  max-width: 86%;
+  padding: 6px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+  background: rgba(255, 253, 250, 0.6);
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 /* ── 输入 ─────────────────────────────────────────────────── */
@@ -542,6 +722,24 @@ async function confirmUnknown(bubble: Bubble) {
   border-left: 2px solid rgba(46, 38, 26, 0.08);
 }
 
+/*
+ * 证据卡本身可以是 <button>（有原文可展开时），也可以只是 <div>。
+ * 先抹平按钮的默认外观，让两者长得一模一样；只在可展开时才给手型。
+ */
+.ev-card {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.ev-card-toggle {
+  cursor: pointer;
+}
+
 .ev-head {
   display: flex;
   align-items: baseline;
@@ -564,10 +762,97 @@ async function confirmUnknown(bubble: Bubble) {
   white-space: nowrap;
 }
 
+/* 出处是二级信息：压在摘要下面一行，太长就省略 */
+.ev-source {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--ink-3);
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .ev-body {
+  display: block;
   color: var(--ink-2);
   font-size: 12.8px;
   line-height: 1.6;
   overflow-wrap: anywhere;
+}
+
+/*
+ * 原文默认折叠：用 max-height + opacity 过渡，点击时再展开。
+ * 全局的 prefers-reduced-motion 已把过渡压到 0.001ms，这里再兜一道。
+ */
+.ev-quote {
+  display: block;
+  padding-left: 9px;
+  border-left: 2px solid rgba(46, 38, 26, 0.12);
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  max-height: 0;
+  margin-top: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-height var(--dur-2) var(--ease-out),
+    opacity var(--dur-2) var(--ease-out), margin-top var(--dur-2) var(--ease-out);
+}
+
+.ev-quote.open {
+  max-height: 60rem;
+  margin-top: 7px;
+  opacity: 1;
+}
+
+.ev-quote-hint {
+  display: block;
+  margin-top: 5px;
+  color: var(--ink-3);
+  font-size: 10.5px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ev-quote {
+    transition: none;
+  }
+}
+
+/* ── 检索范围计数 ─────────────────────────────────────────── */
+
+/*
+ * 答不出时补一行「各路找了多少」，帮用户判断是该换问法还是库里真没有。
+ * 一条发丝线把它和上面的答复隔开，不做卡片，免得喧宾夺主。
+ */
+.scope {
+  width: 100%;
+  padding-top: 8px;
+  border-top: 1px solid var(--hairline);
+}
+
+.scope-channels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.scope-channel {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.scope-channel-count {
+  color: var(--ink-2);
+  font-size: 11.5px;
+  font-weight: 600;
 }
 </style>

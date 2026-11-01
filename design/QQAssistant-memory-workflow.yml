@@ -165,11 +165,11 @@ workflow:
         isInIteration: false
         isInLoop: false
         sourceType: if-else
-        targetType: llm
+        targetType: if-else
       id: e0000000-0000-4000-8000-000000000211
       source: is_resolve
       sourceHandle: 'false'
-      target: answer_llm
+      target: is_expand
       targetHandle: target
       type: custom
       zIndex: 0
@@ -221,6 +221,54 @@ workflow:
       targetHandle: target
       type: custom
       zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: llm
+      id: e0000000-0000-4000-8000-000000000216
+      source: is_expand
+      sourceHandle: 'true'
+      target: expand_llm
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: llm
+      id: e0000000-0000-4000-8000-000000000217
+      source: is_expand
+      sourceHandle: 'false'
+      target: answer_llm
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: llm
+        targetType: code
+      id: e0000000-0000-4000-8000-000000000218
+      source: expand_llm
+      sourceHandle: source
+      target: parse_expand
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: end
+      id: e0000000-0000-4000-8000-000000000219
+      source: parse_expand
+      sourceHandle: source
+      target: end_expand
+      targetHandle: target
+      type: custom
+      zIndex: 0
     nodes:
     - data:
         desc: ''
@@ -264,6 +312,12 @@ workflow:
           required: false
           type: text-input
           variable: stage
+        - label: current_time
+          max_length: 64
+          options: []
+          required: false
+          type: text-input
+          variable: current_time
         - label: question
           max_length: 4000
           options: []
@@ -600,7 +654,9 @@ workflow:
             规则：
             1. contacts 只在消息里出现了「和某个 sender_id 绑定的称呼」时才输出；alias 不超过 16 字，relation 拿不准就留空串。
             2. notes 的 predicate 只能取下列之一：生日、姓名、专业、班级、学号、住址、电话、时间安排、偏好、关系、其他。都不合适就用「其他」。
-            3. subject_sender_id 只能取输入行里的 sender_id；这条事实是关于我自己的，填 null。
+            3. subject_sender_id 取这条事实「说的是谁」的 sender_id：可以是本批发言人（含用「我」指代的自己），
+               也可以是 known_contacts 里、且其称呼在本条证据消息正文中出现过的人；说主人自己时填 null。
+               拿不准是谁的就不要输出这条。
             4. value 不超过 60 字，写成脱离上下文也能看懂的一句话。
             5. happened_at 只在消息明确说了日期时填 YYYY-MM-DD，否则留空串。
             6. source_msg_ids 只能取输入行开头的 id（整数数组），至少一个；拿不出证据的条目不要输出。
@@ -807,18 +863,21 @@ workflow:
             owner_aliases 是主人自己的称呼，逗号分隔。
 
             只输出一个 JSON 对象，不要 Markdown 代码块、不要任何解释：
-            {"entities":["阿黄"],"keywords":["考试","生日"],"time_hint":"本周"}
+            {"entities":["阿黄"],"keywords":["考试","生日"],"queries":["阿黄 考试","阿黄 生日"],"time_hint":"上周","time_from":"2026-10-20T00:00","time_to":"2026-10-26T23:59"}
 
             规则：
             1. entities 只放「人」的称呼，尽量照抄 known_contacts 里的 alias；不确定是不是人就别放。
             2. 问的是主人自己（我、本人、owner_aliases 里的任何称呼）时，不要放进 entities。
             3. keywords 放 2–4 个要拿去检索的词：事件、物品、地点、专有名词；不要放「谁」「什么时候」「说了什么」这类空词。
-            4. time_hint 只在问题里有时间线索时填（例如「上周」「11月」），否则留空串。
-            5. 什么都没认出来就输出 {"entities":[],"keywords":[],"time_hint":""}。
+            4. queries 放 2–4 条改写/同义检索串，每条不超过 32 字；要覆盖原问题的不同说法，不要把「谁」「什么时候」这类空词单独成串。
+            5. time_hint 只在问题里有时间线索时填（例如「上周」「11月」），否则留空串。
+            6. time_from / time_to 用 YYYY-MM-DDTHH:MM：按消息里的「当前时间」把相对时间换算成绝对区间（例如「上周」取上周一 00:00 到上周日 23:59）；只说了日期没给时刻时，起始取 00:00、结束取 23:59。当前时间为空、或任意一边换算不出来，就两个都留空串，不要编造。
+            7. 什么都没认出来就输出 {"entities":[],"keywords":[],"queries":[],"time_hint":"","time_from":"","time_to":""}。
         - id: 7a1c0000-0000-4000-8000-000000000304
           role: user
           text: |
             问题：{{#start.question#}}
+            当前时间：{{#start.current_time#}}
 
             known_contacts: {{#start.known_contacts#}}
             owner_aliases: {{#start.owner_aliases#}}
@@ -850,7 +909,17 @@ workflow:
           def _strings(raw, limit):
               if not isinstance(raw, list):
                   return []
-              return [str(x).strip() for x in raw if str(x).strip()][:limit]
+              seen = []
+              for x in raw:
+                  text = str(x).strip()
+                  if text and text not in seen:
+                      seen.append(text)
+              return seen[:limit]
+
+
+          def _empty():
+              return {"entities": "[]", "keywords": "[]", "queries": "[]",
+                      "time_hint": "", "time_from": "", "time_to": ""}
 
 
           def main(text: str) -> dict:
@@ -863,13 +932,16 @@ workflow:
               try:
                   data = json.loads(raw)
               except Exception:
-                  return {"entities": "[]", "keywords": "[]", "time_hint": ""}
+                  return _empty()
               if not isinstance(data, dict):
-                  return {"entities": "[]", "keywords": "[]", "time_hint": ""}
+                  return _empty()
               return {
                   "entities": json.dumps(_strings(data.get("entities"), 8), ensure_ascii=False),
                   "keywords": json.dumps(_strings(data.get("keywords"), 6), ensure_ascii=False),
+                  "queries": json.dumps(_strings(data.get("queries"), 4), ensure_ascii=False),
                   "time_hint": str(data.get("time_hint") or "").strip()[:64],
+                  "time_from": str(data.get("time_from") or "").strip()[:32],
+                  "time_to": str(data.get("time_to") or "").strip()[:32],
               }
         code_language: python3
         desc: ''
@@ -880,7 +952,16 @@ workflow:
           keywords:
             children: null
             type: string
+          queries:
+            children: null
+            type: string
           time_hint:
+            children: null
+            type: string
+          time_from:
+            children: null
+            type: string
+          time_to:
             children: null
             type: string
         selected: false
@@ -891,7 +972,7 @@ workflow:
           - resolve_llm
           - text
           variable: text
-      height: 100
+      height: 148
       id: parse_resolve
       position:
         x: 1680
@@ -918,12 +999,24 @@ workflow:
           variable: keywords
         - value_selector:
           - parse_resolve
+          - queries
+          variable: queries
+        - value_selector:
+          - parse_resolve
           - time_hint
           variable: time_hint
+        - value_selector:
+          - parse_resolve
+          - time_from
+          variable: time_from
+        - value_selector:
+          - parse_resolve
+          - time_to
+          variable: time_to
         selected: false
         title: 结束（认人）
         type: end
-      height: 154
+      height: 226
       id: end_resolve
       position:
         x: 2000
@@ -973,6 +1066,7 @@ workflow:
             3. 材料不足以回答时，answer 留空串、used_ids 输出 []，不要编造。
             4. 不许出现 candidates 里没有的人、时间、数字。
             5. time_hint 非空时优先采用落在那个时间段里的材料。
+            6. 先看 msg-mention 类证据，它可以说明别人怎么提到这个人。
         - id: 7a1c0000-0000-4000-8000-000000000306
           role: user
           text: |
@@ -1080,6 +1174,225 @@ workflow:
       positionAbsolute:
         x: 2000
         y: 1000
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 241
+      zIndex: 0
+    - data:
+        cases:
+        - case_id: 'true'
+          conditions:
+          - comparison_operator: is
+            id: c0000000-0000-4000-8000-000000000303
+            value: expand
+            varType: string
+            variable_selector:
+            - start
+            - stage
+          id: 'true'
+          logical_operator: and
+        desc: ''
+        selected: false
+        title: 是扩展检索
+        type: if-else
+      height: 122
+      id: is_expand
+      position:
+        x: 1040
+        y: 880
+      positionAbsolute:
+        x: 1040
+        y: 880
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 241
+      zIndex: 0
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        desc: ''
+        memory:
+          query_prompt_template: ''
+          role_prefix:
+            assistant: ''
+            user: ''
+          window:
+            enabled: false
+            size: 10
+        model:
+          completion_params:
+            temperature: 0.2
+          mode: chat
+          name: qwen3.8-flash
+          provider: langgenius/tongyi/tongyi
+        prompt_template:
+        - id: 7a1c0000-0000-4000-8000-000000000307
+          role: system
+          text: |
+            你在一轮「查聊天记录」的续查里工作：第一轮已经找到一些候选材料，但还不足以回答。你要根据问题和已找到的材料，指出下一轮该换什么词去检索，以及材料里新出现、值得继续追的人名。
+
+            candidates 每行一条，格式：
+            类型:id|标签|内容
+            类型只有 msg（聊天原文）、note（已归纳的事实）、memo（备忘）、file（文件）。
+
+            只输出一个 JSON 对象，不要 Markdown 代码块、不要任何解释：
+            {"queries":["学霸 名字","李四 学霸"],"entities":["学霸"],"time_hint":"","time_from":"","time_to":""}
+
+            规则：
+            1. queries 放 2–4 条新的检索串：换同义词、补全材料里出现的称呼、从材料里提到的地点/物品/事件再展开；不要重复已经查过的原问题。
+            2. entities 只放材料里新出现、且你判断是「人」的称呼；照抄材料里的写法；不确定是不是人就别放；已经知道的人不要重复放。
+            3. time_hint 只在问题或材料里有新的时间线索时填，否则留空串。
+            4. time_from / time_to 用 YYYY-MM-DDTHH:MM：按消息里的「当前时间」把相对说法换算成绝对区间；当前时间为空或换算不出来就两个都留空串，不要编造。
+            5. 没有新线索就输出 {"queries":[],"entities":[],"time_hint":"","time_from":"","time_to":""}。
+        - id: 7a1c0000-0000-4000-8000-000000000308
+          role: user
+          text: |
+            问题：{{#start.question#}}
+            时间提示：{{#start.time_hint#}}
+            当前时间：{{#start.current_time#}}
+
+            candidates:
+            {{#start.candidates#}}
+        selected: false
+        title: 扩展检索词
+        type: llm
+        variables: []
+        vision:
+          enabled: false
+      height: 98
+      id: expand_llm
+      position:
+        x: 1360
+        y: 1150
+      positionAbsolute:
+        x: 1360
+        y: 1150
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 241
+      zIndex: 0
+    - data:
+        code: |
+          import json
+
+
+          def _strings(raw, limit):
+              if not isinstance(raw, list):
+                  return []
+              seen = []
+              for x in raw:
+                  text = str(x).strip()
+                  if text and text not in seen:
+                      seen.append(text)
+              return seen[:limit]
+
+
+          def _empty():
+              return {"queries": "[]", "entities": "[]", "time_hint": "",
+                      "time_from": "", "time_to": ""}
+
+
+          def main(text: str) -> dict:
+              """没有新线索就返回空形状；解析不了也返回空，绝不让脏数据流到 Spring。"""
+              raw = (text or "").strip()
+              if raw.startswith("```"):
+                  raw = raw.strip("`")
+                  if raw.startswith("json"):
+                      raw = raw[4:].lstrip()
+              try:
+                  data = json.loads(raw)
+              except Exception:
+                  return _empty()
+              if not isinstance(data, dict):
+                  return _empty()
+              return {
+                  "queries": json.dumps(_strings(data.get("queries"), 4), ensure_ascii=False),
+                  "entities": json.dumps(_strings(data.get("entities"), 8), ensure_ascii=False),
+                  "time_hint": str(data.get("time_hint") or "").strip()[:64],
+                  "time_from": str(data.get("time_from") or "").strip()[:32],
+                  "time_to": str(data.get("time_to") or "").strip()[:32],
+              }
+        code_language: python3
+        desc: ''
+        outputs:
+          queries:
+            children: null
+            type: string
+          entities:
+            children: null
+            type: string
+          time_hint:
+            children: null
+            type: string
+          time_from:
+            children: null
+            type: string
+          time_to:
+            children: null
+            type: string
+        selected: false
+        title: 解析扩展
+        type: code
+        variables:
+        - value_selector:
+          - expand_llm
+          - text
+          variable: text
+      height: 124
+      id: parse_expand
+      position:
+        x: 1680
+        y: 1150
+      positionAbsolute:
+        x: 1680
+        y: 1150
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 241
+      zIndex: 0
+    - data:
+        desc: ''
+        outputs:
+        - value_selector:
+          - parse_expand
+          - queries
+          variable: expand_queries
+        - value_selector:
+          - parse_expand
+          - entities
+          variable: expand_entities
+        - value_selector:
+          - parse_expand
+          - time_hint
+          variable: expand_time_hint
+        - value_selector:
+          - parse_expand
+          - time_from
+          variable: expand_time_from
+        - value_selector:
+          - parse_expand
+          - time_to
+          variable: expand_time_to
+        selected: false
+        title: 结束（扩展）
+        type: end
+      height: 202
+      id: end_expand
+      position:
+        x: 2000
+        y: 1150
+      positionAbsolute:
+        x: 2000
+        y: 1150
       selected: false
       sourcePosition: right
       targetPosition: left

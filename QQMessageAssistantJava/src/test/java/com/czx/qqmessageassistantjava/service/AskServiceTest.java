@@ -58,18 +58,28 @@ class AskServiceTest {
     private static final Long SENDER_A = 9_940_001L;
     private static final Long SENDER_B = 9_940_002L;
 
+    /**
+     * 新契约（spec §7.7 终态第 5 条）：未知 alias 且全库没有出现过 → 反问没有意义，
+     * 直接按「没找到」返回，needClarify 为 null；没有候选时也不再调 answer。
+     * 旧契约在认人阶段立刻反问，这条测试保留「不会因此 500、不会硬答」的原始意图。
+     */
     @Test
-    void unknownAlias_returnsNeedClarifyAndNeverCallsTheAnswerStage() {
+    void unknownAliasWithoutOccurrences_isNotFoundAndNeverCallsTheAnswerStage() {
         String alias = "查无此人-" + System.nanoTime();
         stub(resolve(List.of(alias)), Map.of());
 
         AskResponse response = askService.ask(question("这个人是谁"));
 
-        assertThat(response.getNeedClarify()).isNotNull();
-        assertThat(response.getNeedClarify().getAlias()).isEqualTo(alias);
-        assertThat(response.getNeedClarify().getCandidates()).isEmpty();
+        assertThat(response.getNeedClarify()).isNull();
         assertThat(response.getAnswer()).isEmpty();
-        verify(difyWorkflowClient, times(1)).run(eq("ask"), anyMap());
+        assertThat(response.getEvidence()).isEmpty();
+        assertThat(response.getScope()).isNotNull();
+        assertThat(response.getScope().getMessage()).isNotEmpty();
+        // resolve + 空候选后的 expand；没有任何 stage=answer 调用
+        ArgumentCaptor<Map<String, Object>> captor = ArgumentCaptor.forClass(Map.class);
+        verify(difyWorkflowClient, times(2)).run(eq("ask"), captor.capture());
+        assertThat(captor.getAllValues()).extracting(inputs -> inputs.get("stage"))
+                .containsExactly("resolve", "expand");
     }
 
     @Test
@@ -142,8 +152,12 @@ class AskServiceTest {
         askService.ask(question("小郑的生日"));
 
         ArgumentCaptor<Map<String, Object>> captor = ArgumentCaptor.forClass(Map.class);
-        verify(difyWorkflowClient, times(2)).run(eq("ask"), captor.capture());
-        String candidates = String.valueOf(captor.getAllValues().get(1).get("candidates"));
+        // resolve + 第 1 轮 answer + （答案为空后的）expand
+        verify(difyWorkflowClient, times(3)).run(eq("ask"), captor.capture());
+        Map<String, Object> answerInputs = captor.getAllValues().stream()
+                .filter(inputs -> "answer".equals(inputs.get("stage")))
+                .findFirst().orElseThrow();
+        String candidates = String.valueOf(answerInputs.get("candidates"));
         assertThat(candidates).contains("note:").contains("msg:");
         Assertions.assertThat(candidates).contains("11月11日");
     }

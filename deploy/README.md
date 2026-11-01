@@ -116,6 +116,52 @@ docker compose exec langbot_plugin_runtime tail -n 60 /app/data/qq_assistant/dat
 - Windows 防火墙放行 8080（给插件和桥调用）
 - MySQL 跑在虚拟机上的话，Spring 的 JDBC 地址照旧用 `192.168.100.128:3307`
 - 已有库记得执行 `db/migrations/2026-10-27-phase3-file-task-and-log.sql`
+  以及 `db/migrations/2026-10-31-embedding-retrieval.sql`（两张表 + `message_log.ft_content` 全文索引，
+  需要 MySQL 8.0+ 的 `ngram` 分词；脚本可重复执行）
+
+### 6.1 语义检索模型（可选，但 `/api/ask` 的语义通道需要）
+
+模型文件**不进仓库**（`QQMessageAssistantJava/models/` 已在 `.gitignore`）。在 `QQMessageAssistantJava/`
+下执行仓库自带脚本：
+
+```bash
+cd QQMessageAssistantJava
+bash scripts/fetch-embedding-model.sh
+```
+
+也可以手动下载同样两个文件（保持文件名与目录）：
+
+```text
+https://hf-mirror.com/Xenova/bge-small-zh-v1.5/resolve/main/onnx/model.onnx
+https://hf-mirror.com/Xenova/bge-small-zh-v1.5/resolve/main/vocab.txt
+```
+
+放到 `QQMessageAssistantJava/models/bge-small-zh-v1.5/`（`model.onnx` 和 `vocab.txt` 同级），
+并校验字节数：
+
+| 本地文件 | 来源 | 大小（字节） |
+|---|---|---|
+| `model.onnx` | 远端 `onnx/model.onnx` | **94851877** |
+| `vocab.txt` | 远端 `vocab.txt` | **109540** |
+
+> 计划文档里写的 94951877 是笔误，以脚本与上表为准。
+
+对应配置在 `src/main/resources/application.yaml` 的 `app.embedding.*`：
+
+| 配置键 | 默认 | 说明 |
+|---|---|---|
+| `app.embedding.enabled` | `true` | `false` 或模型文件缺失 → 语义通道关闭，其余六路照常 |
+| `app.embedding.mode` | `local` | `local`（进程内 ONNX）\| `http`（OpenAI 兼容 `/embeddings`） |
+| `app.embedding.model-dir` | `./models/bge-small-zh-v1.5` | 相对模块根目录（运行目录 = `QQMessageAssistantJava`） |
+| `app.embedding.model-id` | `bge-small-zh-v1.5` | 换模型 = 全量重建 |
+| `app.embedding.dim` | `512` | 向量维度 |
+| `app.embedding.http.base-url` | 空 | `mode=http` 时使用，例：`http://127.0.0.1:8081/v1` |
+| `app.embedding.http.api-key` | 空 | **只从环境变量 `EMBEDDING_HTTP_API_KEY` 注入，不要写进仓库** |
+| `app.embedding.http.model` | 空 | 外部端点模型名，环境变量 `EMBEDDING_HTTP_MODEL` |
+| `app.retrieval.pre-run-index-limit` | `500` | 每次 `/api/ask` 前同步补跑向量的上限；超出部分计入 `scope.lag` |
+
+部署后用 `GET /api/memory/embeddings/status` 验证：`semantic=true` 即模型就绪。
+模型缺失或 ONNX 初始化失败时应用照常启动，只是语义通道关闭——不会让 `/api/ask` 500。
 
 ## 7. 验收（真机）
 

@@ -105,10 +105,13 @@ QQ ─► NapCat ─► 插件 ──┬─ 未 @：只写 message_log，结束
 |---|---|---|
 | `digest` | 一段群聊记录 + 画像 + 用户关注点 | `items[]`，每项 {summary, importance 1-5, keywords, mentions_me, source_msg_ids} |
 | `extract` | 一段对话 + 已知 contact 列表 | `contacts[]`（新认出的人）、`notes[]`（事实三元组 + 证据 id） |
-| `ask`（`stage=resolve`） | 问题 + `contact` 已知别名表 | `entities[]`（认出来的人）、`need_clarify`（没有就继续）、`keywords[]`、`time_hint` |
+| `ask`（`stage=resolve`） | 问题 + `contact` 已知别名表 + `current_time` | `entities[]`（认出来的人）、`keywords[]`、`queries[]`（改写检索串）、`time_hint`、`time_from` / `time_to` |
 | `ask`（`stage=answer`） | 问题 + 候选集（人物/事实/消息/文件/备忘） | `answer` + `used_ids[]` |
+| `ask`（`stage=expand`） | 问题 + 累计候选摘要 + `current_time` | `expand_queries[]`、`expand_entities[]`、`expand_time_hint`、`expand_time_from` / `expand_time_to` |
 
-`ask` 一个任务跑两次（先认人、再答题），不是一个 prompt 里干两件事——
+`need_clarify` 不在 Dify 的输出里：resolve 只做语义抽取，认人歧义由 Spring 查 `contact` 后算出 `needClarify`（见 §7.3 与 `api_contract.md`）。
+
+`ask` 一个任务按 `stage` 分多次调用（`resolve` 认人 / 改写 → `answer` 作答 → 答不出时 `expand` 换检索串，最多 3 轮），不是一个 prompt 里干两件事——
 「先决定要不要反问」和「根据候选集生成结论」的失败方式完全不同，分开才能各自调。
 
 **我的取舍**：一个应用而不是三个。省两份配置和两份重复的画像注入；代价是一个应用出问题时三个功能一起停，个人工具可以接受。若后续某个任务调参频繁互相打架，再拆。
@@ -178,26 +181,44 @@ Spring 侧新增 `client/DifyWorkflowClient`（`POST /v1/workflows/run`，blocki
     证据：三班群 · 10-28 21:03 · 小明：「11 月 11」
 ```
 
-### 7.2 为什么要夜间归纳，而不是纯向量检索
+### 7.2 为什么是混合检索：结构化事实 + 七路召回 + RRF
 
 你举的例子——问「你的生日是多少」，答「11 月 11」——字面和「生日」根本不挨着。
 纯向量检索在这种**跨句、跨轮、需要归属到人**的场景上不可靠；而数据量小（个人 QQ），
-每天把新消息过一遍、抽成「谁 · 什么属性 · 什么值 · 出处」，查的时候就是结构化查询 + 语义选人，
-既准确又能给证据。
+每天把新消息过一遍、抽成「谁 · 什么属性 · 什么值 · 出处」，查的时候就是结构化事实精确命中。
 
-**这是你的授权范围**（「搭知识库也好、每天 0 点扫一遍也好」），我选了后者。
+但只靠夜间归纳也不够：换说法/代词兜不住、事实归属未知或跨会话兜不住、两跳推理兜不住。
+所以结论不是二选一，而是**混合检索**：
+
+- **结构化事实**（`memory_note`）负责精确命中，并给出可回溯的证据 id；
+- **七路召回**（`note / msg-person / msg-mention / msg-lexical / msg-semantic / memo / file`）
+  负责兜底：`message_log` 的 `FULLTEXT(ngram)` 做字面召回，`message_embedding` 做语义召回；
+- **RRF** 融合去重，再按时间软分段与字符/条数预算截断，交给 Dify 作答并校验 `used_ids`。
+
+实现与取舍见 [`intelligent_retrieval.md`](./intelligent_retrieval.md) §1.3、§7。
+「为什么不只做向量」的论证仍然成立，只是它不再是全部。
+
+**这是你的授权范围**（「搭知识库也好、每天 0 点扫一遍也好」），我选了「夜间结构化 + 在线混合召回」。
 
 ### 7.3 查询流水线
 
 ```
 问题
- ├─ 1. 认人（Dify ask, stage=resolve）：从问题里抽出人名 → 到 contact 里查
- │      查不到 / 一个名字对应多个 sender_id
- │        → 返回 need_clarify（附候选列表）；本次调用结束，不写任何东西
- ├─ 2. 候选集（Spring，SQL）：见下表
- ├─ 3. 生成（Dify ask, stage=answer）：问题 + 候选集 → 结论 + used_ids
- └─ 4. 校验（Spring）：used_ids ⊆ 候选集的 id 集合，否则降级为「只给证据、不给结论」
+ ├─ 1. 查询理解（Dify ask, stage=resolve）：抽 entities / keywords / queries / time_hint / time_from / time_to
+ │      Spring 再拿 contact 精确认人：≥2 个 sender_id → needClarify（附候选，不检索）；
+ │      唯一 → 主体；没有 contact → 记下称呼，稍后按「记录里出现过几次」决定是否反问
+ ├─ 2. 检索前补跑向量：indexMissing(≤500)，剩余缺口如实写进 scope.lag
+ ├─ 3. 七路召回（Spring）：note / msg-person / msg-mention / msg-lexical / msg-semantic / memo / file
+ │      单路失败只丢这一路（scope.channels 置 null），不冒 500
+ ├─ 4. RRF 融合：跨轮累计、按通道内名次计分、时间软分段、30000 字符 / 150 条预算
+ ├─ 5. 作答（Dify ask, stage=answer）：问题 + 候选集 → 结论 + used_ids
+ ├─ 6. 校验（Spring）：used_ids ⊆ 累计候选集，否则 degraded=true，只给证据、不给结论
+ └─ 7. 答不出且还有轮次预算 → Dify ask, stage=expand 换新检索串 / 实体，回到 3；最多 3 轮
 ```
+
+`needClarify` 是 Spring 算出来的结果，不是 Dify 的输出；resolve 失败时按原问题整句检索。
+候选集为空也会跑一次 `expand`（可能只是措辞问题），仍为空才判定「没找到」。
+完整终态表与失败降级规则见 [`intelligent_retrieval.md`](./intelligent_retrieval.md) §7.6–§7.8。
 
 **反问是无状态的。** `/api/ask` 不带会话，前端自己保存上一轮的
 `{question, alias, candidates}`，用户回答后带上 `clarify` 字段再发一次：
@@ -218,16 +239,20 @@ Spring 侧新增 `client/DifyWorkflowClient`（`POST /v1/workflows/run`，blocki
 `source_msg_ids` / `msg:` 里的数字是 **`message_log.id`**（本库自增），
 不是平台消息 id——插件此刻的入队负载里根本没有平台 id，夜间任务读的是已落库的行。
 
-**候选集来源与上限**
+**候选集来源与上限**（与 [`intelligent_retrieval.md`](./intelligent_retrieval.md) §7.3 一致）
 
-| 来源 | 怎么选 | 上限 |
+| 通道 | 怎么选 | 单路上限 |
 |---|---|---|
-| `memory_note` | 主体 = 解析出的 `sender_id`；谓词走受控词表（见下） | 30 |
-| `message_log` | `content LIKE 关键词` 或 发送者 = 解析出的人；按时间近优先 | 30 |
-| `file_task` | 文件名 / 发送者 | 15 |
-| `memo` | 标题 + 正文模糊 | 15 |
+| `note` | 主体 = 解析出的 `sender_id`；keyword 命中谓词 / 值 | 200 + 100 |
+| `msg-person` | 发送者 = 解析出的人，时间倒序 | 200 |
+| `msg-mention` | 每个 entity 走一次全文，不按会话 / 发送人过滤 | 100 / 实体 |
+| `msg-lexical` | 每条 query 走一次全文 | 100 / query |
+| `msg-semantic` | 前 3 条 query 的向量平均后扫索引；语义不可用时该路不跑 | 100 |
+| `memo` | 标题 / 正文 keyword LIKE | 50 |
+| `file` | 文件名 keyword LIKE | 30 |
 
-总字符 12000，超了按时间近的截断。**先截断再问模型**，不把几万条丢进去。
+总预算 30000 字符 / 150 条，在 RRF 融合后、交给模型前统一截断（多轮时对累计集每轮做一次）。
+时间软分段把落在 `time_from` / `time_to` 内的候选整体前置，区间外仍保留，不做硬过滤。
 
 **谓词受控词表**：`extract` 只能从下面这张表里选 `predicate`，另给一个自由文本 `detail`：
 
@@ -427,11 +452,13 @@ CREATE TABLE `chat_digest_item` (
 | 反问死循环（用户也说不清小明是谁） | 最多反问一次，第二次直接给候选列表让人点，仍不行就答「没查到」 |
 | 夜间任务跑一半崩了 | 记录已处理到的 `period_end`，下次从这里继续；不重试、不补偿 |
 | 群名/昵称拿不到 | 允许 NULL，UI 退化显示 ID；不影响整理逻辑 |
-| 查询候选集太大 | 先截断（每人 30 条 / 总 12000 字）再交给模型 |
+| 查询候选集太大 | 七路各有单路上限；RRF 融合后按 30000 字符 / 150 条统一截断再交给模型（见 [`intelligent_retrieval.md`](./intelligent_retrieval.md) §7.3） |
 
 ## 12. 明确不做
 
-- 不做向量数据库。理由见 §7.2；`memory_note` 已经是「向量化之后的答案」。
+- ~~不做向量数据库。理由见 §7.2；`memory_note` 已经是「向量化之后的答案」。~~
+  **已推翻**：现采用混合检索（结构化事实 + 七路召回 + RRF），见
+  [`intelligent_retrieval.md`](./intelligent_retrieval.md) §1.3。`memory_note` 只是其中一路，不是全部。
 - 不做主动插话式自动回复。
 - 不做私聊的消息整理。
 - 不做文件填写的任何改动（含删除）。

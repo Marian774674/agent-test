@@ -57,6 +57,13 @@
             <version>8.0.33</version>
         </dependency>
 
+        <!-- 进程内 ONNX 推理：智能检索的语义向量（模型文件不入库，见 scripts/fetch-embedding-model.sh） -->
+        <dependency>
+            <groupId>com.microsoft.onnxruntime</groupId>
+            <artifactId>onnxruntime</artifactId>
+            <version>1.20.0</version>
+        </dependency>
+
         <dependency>
             <groupId>com.baomidou</groupId>
             <artifactId>mybatis-plus-spring-boot3-starter</artifactId>

@@ -3,8 +3,10 @@ package com.czx.qqmessageassistantjava.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.czx.qqmessageassistantjava.entity.MessageLog;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
+import java.util.Collection;
 import java.util.List;
 
 @Mapper
@@ -30,4 +32,54 @@ public interface MessageLogMapper extends BaseMapper<MessageLog> {
             + "WHERE chat_id IS NULL AND sender_id IS NOT NULL "
             + "GROUP BY sender_id")
     List<MessageLog> selectPrivatePeers();
+
+    /**
+     * 中文全文召回（ngram）：<b>不按 sender 或会话过滤</b>——答案可以在任何人说的任何会话里。
+     * 但只取 {@code direction = 'IN'}：机器人自己发出去的话不是证据（spec §3.1），
+     * 否则机器人说过的一句会被当成对方说的，证据卡上还会署上对方的名字。
+     * 空串 / NULL 的 content 不参与 MATCH，天然被排除。
+     */
+    @Select("SELECT * FROM message_log "
+            + "WHERE direction = 'IN' "
+            + "AND MATCH(content) AGAINST(#{q} IN NATURAL LANGUAGE MODE) "
+            + "ORDER BY MATCH(content) AGAINST(#{q} IN NATURAL LANGUAGE MODE) DESC, id DESC "
+            + "LIMIT #{limit}")
+    List<MessageLog> searchFulltext(@Param("q") String q, @Param("limit") int limit);
+
+    /**
+     * 主体本人发的 IN 消息（{@code msg-person} 通道）：时间倒序，最多 {@code limit} 条。
+     *
+     * <p>这是唯一按发送人过滤的召回通道——其余通道都不带人物/会话条件，
+     * 否则「答案在别人嘴里、在别的会话里」就永远找不回来。
+     */
+    @Select("<script>SELECT * FROM message_log "
+            + "WHERE direction = 'IN' AND sender_id IN "
+            + "<foreach collection=\"senderIds\" item=\"sid\" open=\"(\" separator=\",\" close=\")\">"
+            + "#{sid}</foreach> "
+            + "ORDER BY created_at DESC, id DESC LIMIT #{limit}</script>")
+    List<MessageLog> selectBySenders(@Param("senderIds") Collection<Long> senderIds,
+                                     @Param("limit") int limit);
+
+    /**
+     * 某个称呼在 IN 消息正文里作为子串出现的行数（跨全部会话）。
+     * 入参走 {@link #likeEscape(String)}，否则「50%」会把「5 到 0」之类的文本也算进来。
+     */
+    default long countMentions(String alias) {
+        return countMentionsEscaped(likeEscape(alias));
+    }
+
+    @Select("SELECT COUNT(*) FROM message_log "
+            + "WHERE direction = 'IN' "
+            + "AND content LIKE CONCAT('%', #{alias}, '%') ESCAPE '\\\\'")
+    long countMentionsEscaped(@Param("alias") String alias);
+
+    /** 转义 LIKE 的通配符：反斜杠、{@code %}、{@code _}。 */
+    static String likeEscape(String s) {
+        if (s == null) {
+            return null;
+        }
+        return s.replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_");
+    }
 }

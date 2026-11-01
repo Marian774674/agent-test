@@ -34,8 +34,8 @@ def test_is_a_workflow_app(graph):
     assert doc["app"]["name"] == "记忆与整理"
 
 
-def test_four_branches_are_wired(graph):
-    """四条支路一张表对死：多一条少一条都是接线错。"""
+def test_branches_are_wired(graph):
+    """每条支路一张表对死：多一条少一条都是接线错。"""
     _, g, _ = graph
     edges = {(e["source"], e["sourceHandle"]): e["target"] for e in g["edges"]}
     assert edges == {
@@ -49,9 +49,13 @@ def test_four_branches_are_wired(graph):
         ("extract_llm", "source"): "parse_extract",
         ("parse_extract", "source"): "end_extract",
         ("is_resolve", "true"): "resolve_llm",
-        ("is_resolve", "false"): "answer_llm",
+        ("is_resolve", "false"): "is_expand",
         ("resolve_llm", "source"): "parse_resolve",
         ("parse_resolve", "source"): "end_resolve",
+        ("is_expand", "true"): "expand_llm",
+        ("is_expand", "false"): "answer_llm",
+        ("expand_llm", "source"): "parse_expand",
+        ("parse_expand", "source"): "end_expand",
         ("answer_llm", "source"): "parse_ask_answer",
         ("parse_ask_answer", "source"): "end_answer",
     }
@@ -62,7 +66,7 @@ def test_start_declares_exactly_the_inputs_spring_sends(graph):
     _, _, nodes = graph
     declared = {v["variable"] for v in nodes["start"]["data"]["variables"]}
     assert declared == {
-        "task", "stage", "chat_name", "messages", "profile", "focus",
+        "task", "stage", "current_time", "chat_name", "messages", "profile", "focus",
         "question", "known_contacts", "owner_aliases", "candidates", "time_hint",
     }
 
@@ -196,7 +200,8 @@ def test_parse_ask_answer_blanks_an_answer_without_citations(graph):
 def test_end_nodes_expose_unique_output_names(graph):
     """Dify 要求各结束节点的输出变量名全局唯一，否则「发布」直接被清单挡住。
 
-    四个结束节点各带自己的输出名，Spring 按名字取值——重名就是静默串台。
+    五个结束节点各带自己的输出名，Spring 按名字取值——重名就是静默串台。
+    expand 的结束节点用 expand_* 前缀，避免和 resolve 的 queries/time_* 撞名。
     """
     _, _, nodes = graph
     names = [
@@ -206,4 +211,10 @@ def test_end_nodes_expose_unique_output_names(graph):
         for out in node["data"].get("outputs", [])
     ]
     assert len(names) == len(set(names)), f"结束节点输出变量重名：{names}"
-    assert set(names) == {"items", "contacts", "notes", "entities", "keywords", "time_hint", "answer", "used_ids"}
+    assert set(names) == {
+        "items", "contacts", "notes",
+        "entities", "keywords", "queries", "time_hint", "time_from", "time_to",
+        "answer", "used_ids",
+        "expand_queries", "expand_entities", "expand_time_hint",
+        "expand_time_from", "expand_time_to",
+    }

@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS `message_log` (
   KEY `idx_sender_created` (`sender_id`, `created_at`),
   KEY `idx_created` (`created_at`),
   KEY `idx_conversation` (`conversation_id`),
-  KEY `idx_chat_created` (`chat_id`, `created_at`)
+  KEY `idx_chat_created` (`chat_id`, `created_at`),
+  FULLTEXT KEY `ft_content` (`content`) WITH PARSER ngram
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='统一消息日志';
 
 CREATE TABLE IF NOT EXISTS `memo` (
@@ -253,3 +254,29 @@ CREATE TABLE IF NOT EXISTS `memory_note` (
   KEY `idx_subject_pred` (`subject_sender_id`, `predicate`),
   KEY `idx_predicate` (`predicate`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='事实归纳';
+
+CREATE TABLE IF NOT EXISTS `message_embedding` (
+  `message_log_id` BIGINT UNSIGNED NOT NULL,
+  `model`          VARCHAR(64) NOT NULL,
+  `dim`            SMALLINT NOT NULL,
+  `vector`         MEDIUMBLOB NOT NULL,
+  `created_at`     DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`message_log_id`,`model`),
+  KEY `idx_model` (`model`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='消息向量';
+
+CREATE TABLE IF NOT EXISTS `ask_trace` (
+  `id`             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `question`       VARCHAR(512)  NOT NULL,
+  `entities`       VARCHAR(512)  NULL,
+  `queries`        VARCHAR(1024) NULL,
+  `channels`       VARCHAR(128)  NULL,
+  `candidate_cnt`  INT NOT NULL DEFAULT 0,
+  `rounds`         TINYINT NOT NULL DEFAULT 1,
+  `answer`         VARCHAR(1024) NULL,
+  `degraded`       TINYINT NOT NULL DEFAULT 0,
+  `latency_ms`     INT NULL,
+  `created_at`     DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  KEY `idx_created` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='一次问答的检索轨迹';

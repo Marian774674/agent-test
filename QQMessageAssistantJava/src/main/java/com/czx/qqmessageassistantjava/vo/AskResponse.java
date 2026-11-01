@@ -11,4 +11,6 @@ public class AskResponse {
     private Boolean degraded;
     private List<EvidenceVO> evidence;
     private ClarifyStateVO needClarify;
+    /** 本次检索的范围与计数（spec §7.8）；老前端忽略即可 */
+    private AskScopeVO scope;
 }
