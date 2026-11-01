@@ -28,6 +28,23 @@ app:
   reminder:
     scan-interval-ms: 3600000
     batch-size: 50
+    # 六桶与产量一致（服务层测试按这些断言），另加一个产量里没有的「测试桶」：
+    # 它出现 = YAML 的列表确实整体覆盖了 Java 出厂值，而不是静默退回默认表。
+    policy:
+      - category: 学业
+        points: ['-1d@20:00', '-1h']
+      - category: 财务
+        points: ['-1d@10:00', '@08:00']
+      - category: 社交
+        points: ['-2h', '-30m']
+      - category: 健康
+        points: ['-30m']
+      - category: 日常
+        points: ['-30m']
+      - category: 其他
+        points: ['-1h']
+      - category: 测试桶
+        points: ['-5m']
   embedding:
     # 测试不加载真模型：索引任务的向量由测试里的 @Primary fake 提供。
     # 否则每个 Spring 上下文启动都会去加载 ONNX 模型并读写索引。

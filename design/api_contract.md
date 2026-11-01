@@ -230,6 +230,22 @@
 | 其他（含 `category` 为空） | 提前 1 小时 |
 
 - 计划**可配置**：`app.reminder.policy`（`application.yaml`），改完重启生效。
+  写成**列表**、分类名放在 `category` 字段里，不要写成 `学业: [...]` 这种中文 key 的映射——
+  Spring 属性名只认 ASCII，中文 key 会在绑定阶段被丢掉，YAML 改了会静默不生效：
+
+  ```yaml
+  app:
+    reminder:
+      max-per-memo: 2        # 一条备忘最多推几次
+      dedupe-minutes: 20     # 两个点相差小于它就合并
+      policy:
+        - category: 学业
+          points: ['-1d@20:00', '-1h']
+        - category: 其他
+          points: ['-1h']
+  ```
+
+  列表是整份覆盖：YAML 里写了 `policy` 就不再使用 Java 出厂表，没写的分类落到「其他」。
 - 标签三种写法：`@HH:mm`（锚点当天此刻）、`±Nd@HH:mm`（锚点日期 ±N 天再取此刻）、
   `±N[dhm]`（相对锚点提前的天/小时/分钟）。这些标签原样存进 `memo_reminder.offset_label`。
 - **锚点归一化**：`dueTime` 的时刻部分是 `00:00`（LLM 只给了日期）时，锚点取当天 **09:00**，

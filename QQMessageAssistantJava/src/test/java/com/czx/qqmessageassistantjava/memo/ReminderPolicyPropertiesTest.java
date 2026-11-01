@@ -14,7 +14,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 策略表用中文 key、值里带冒号（{@code -1d@20:00}），YAML 写错会静默绑不上——
+ * 策略表里既有中文（分类名）、又有带冒号的值（{@code -1d@20:00}），YAML 写错会静默绑不上——
  * 这条测试就是拦这个的。
  */
 @SpringBootTest
@@ -25,10 +25,16 @@ class ReminderPolicyPropertiesTest {
     private ReminderPolicyProperties properties;
 
     @Test
-    void policy_binds_chinese_category_keys() {
-        assertThat(properties.getPolicy())
+    void policy_binds_chinese_category_names_from_yaml() {
+        // 测试 profile 的列表里多了一个「测试桶」：它出现说明 YAML 整体覆盖了 Java 出厂值。
+        // 曾经的写法是「中文 key: [标签]」的映射——Spring 属性名只认 ASCII，中文 key 被丢掉，
+        // 只剩 "0"/"1" 两个假 key，改 YAML 永远不生效。
+        assertThat(properties.policyMap()).containsKey("测试桶");
+        assertThat(properties.policyMap())
                 .containsKeys("学业", "财务", "社交", "健康", "日常", "其他");
-        assertThat(properties.getPolicy().get("学业"))
+        // 列表是整体覆盖而不是合并：6 个出厂桶 + 1 个测试桶
+        assertThat(properties.getPolicy()).hasSize(7);
+        assertThat(properties.policyMap().get("学业"))
                 .containsExactly("-1d@20:00", "-1h");
     }
 
@@ -48,8 +54,9 @@ class ReminderPolicyPropertiesTest {
                 .load("application", new ClassPathResource("application.yaml"));
         PropertySource<?> yaml = sources.get(0);
 
-        assertThat(yaml.getProperty("app.reminder.policy.学业[0]")).isEqualTo("-1d@20:00");
-        assertThat(yaml.getProperty("app.reminder.policy.社交[1]")).isEqualTo("-30m");
+        assertThat(yaml.getProperty("app.reminder.policy[0].category")).isEqualTo("学业");
+        assertThat(yaml.getProperty("app.reminder.policy[0].points[0]")).isEqualTo("-1d@20:00");
+        assertThat(yaml.getProperty("app.reminder.policy[2].points[1]")).isEqualTo("-30m");
         assertThat(yaml.getProperty("app.reminder.max-per-memo")).isEqualTo(2);
     }
 
