@@ -130,6 +130,9 @@ Spring 侧新增 `client/DifyWorkflowClient`（`POST /v1/workflows/run`，blocki
 两个定时任务都通过 `app_setting` 里的开关控制（默认**关**，与提醒扫描一致）：
 `digest_enabled`、`memory_job_enabled`。开之前先在日志里能看到「这次会处理 N 条消息」。
 
+每小时整理与「进首页按需整理」（§6.1）是两条并列的触发路径，都写 `chat_digest_item`；
+后者只在攒够了（条数/时长阈值）时补跑一次，避免用户刚打开页面却看到几小时前的旧内容。
+
 **幂等**：整理任务按 `(chat_id, period_start)` 唯一键写入，重跑覆盖不追加；
 归纳任务按 `(subject_sender_id, predicate, value)` 去重，同值不重复插。
 失败只记日志、下次从上次成功的 `period_end` 继续，不重试、不补偿。
@@ -138,7 +141,12 @@ Spring 侧新增 `client/DifyWorkflowClient`（`POST /v1/workflows/run`，blocki
 
 ### 6.1 触发与展示
 
-- 打开前端 → `GET /api/digest?since=<上次离开时间>`；
+- 每次进「首页」→ `POST /api/digest/refresh`：后端拿「上次整理时间」到现在的窗口，
+  窗口内消息数 **> `digest_refresh_min_messages`（默认 100）** 或间隔
+  **> `digest_refresh_min_minutes`（默认 60）**，任一满足就对勾选的群跑一次整理并把锚点推到当前；
+  都没到就什么都不做，窗口继续累积（两个阈值在「群设置 → 整理偏好」里改）。
+  锚点存 `app_setting.last_digest_run`，与用户点「都看过了」的 `last_digest_seen` 是两个概念。
+- 随后 `GET /api/digest?since=<上次离开时间>`；
 - 首页顶部一张「你不在的这段时间」卡片，按重要度倒序，默认折叠到 5 条；
 - 有 `importance >= 4` 的项时**对那条弹窗一次**（同一时间段只弹一次，记在本地存储）；
 - 卡片底部「都在这里了」按钮 → `POST /api/digest/seen` 更新 `app_setting.last_digest_seen`。

@@ -7,7 +7,7 @@ import ErrorState from '@/components/ErrorState.vue'
 import DigestPopup from '@/components/DigestPopup.vue'
 import PageHead from '@/components/PageHead.vue'
 import Skeleton from '@/components/Skeleton.vue'
-import { getLastSeen, listDigest, markSeen } from '@/api/digest'
+import { getLastSeen, listDigest, markSeen, refreshDigest } from '@/api/digest'
 import type { DigestItem } from '@/api/digest'
 import { useRefresh } from '@/composables/useRefresh'
 import { useToast } from '@/composables/useToast'
@@ -52,6 +52,9 @@ async function load(silent = false) {
     error.value = ''
   }
   try {
+    // 每次进首页都问一次：距上次整理超过一段时间、或中间攒了足够多消息，后端才真的跑整理
+    // （两个阈值在「群设置」里改）；没到阈值就是一次几十毫秒的计数，窗口继续累积
+    await refreshDigest()
     // 时间基准由后端给：第一次进来是空串（后端按 24 小时算），之后是上次点「都看过了」的时刻
     lastSeen.value = await getLastSeen()
     items.value = await listDigest(lastSeen.value || undefined)

@@ -14,6 +14,20 @@ export interface DigestItem {
   createdAt: string
 }
 
+/** 进首页时问后端：距上次整理够久或消息够多才真的跑一次整理 */
+export interface DigestRefresh {
+  enabled: boolean
+  refreshed: boolean
+  messageCount: number
+  minutesSince: number
+  saved: number
+  windowStart: string | null
+}
+
+export function refreshDigest() {
+  return http.post<DigestRefresh>('/api/digest/refresh')
+}
+
 /** 上次离开之后的整理结果；不传 since 时后端按最近 24 小时算 */
 export function listDigest(since?: string) {
   return http.get<DigestItem[]>('/api/digest', { since })
