@@ -20,9 +20,11 @@ const error = ref('')
 const digestEnabled = ref(false)
 const aliases = ref('')
 const focus = ref('')
-/** 进首页时的整理门槛：消息条数、间隔分钟数，任一超过就跑一次 */
-const minMessages = ref('100')
-const minMinutes = ref('60')
+/** 进首页时的整理门槛：消息条数、间隔分钟数，任一超过就跑一次。
+ *  数字框的 v-model 给回来的是 number，清空是 ''，所以按 number | '' 收，
+ *  存的时候再统一落回正整数——别拿字符串方法去处理它。 */
+const minMessages = ref<number | ''>(100)
+const minMinutes = ref<number | ''>(60)
 const savingPrefs = ref(false)
 const prefsSaved = ref(false)
 
@@ -47,8 +49,8 @@ async function load(silent = false) {
     digestEnabled.value = settings.digest_enabled === '1'
     aliases.value = settings.owner_aliases ?? ''
     focus.value = settings.digest_focus_prompt ?? ''
-    minMessages.value = settings.digest_refresh_min_messages ?? '100'
-    minMinutes.value = settings.digest_refresh_min_minutes ?? '60'
+    minMessages.value = toPositiveInt(settings.digest_refresh_min_messages, 100)
+    minMinutes.value = toPositiveInt(settings.digest_refresh_min_minutes, 60)
   } catch (e) {
     const message = e instanceof Error ? e.message : '加载失败'
     if (silent) toast.error(message)
@@ -79,15 +81,23 @@ async function toggle(chat: ChatSetting, field: 'digestEnabled' | 'autoReplyEnab
   }
 }
 
+/** 输入框可能被清空成 ''，也可能被手输成小数：统一收成一个正整数再存 */
+function toPositiveInt(value: string | number | '' | null | undefined, fallback: number) {
+  const n = Math.trunc(Number(value))
+  return Number.isFinite(n) && n > 0 ? n : fallback
+}
+
 async function savePrefs() {
   savingPrefs.value = true
+  // 上一次成功留下的「已保存」先收回来：这次要是失败，按钮不能还挂着已保存
+  prefsSaved.value = false
   try {
     await putSettings({
       digest_enabled: digestEnabled.value ? '1' : '0',
       owner_aliases: aliases.value.trim(),
       digest_focus_prompt: focus.value.trim(),
-      digest_refresh_min_messages: minMessages.value.trim() || '100',
-      digest_refresh_min_minutes: minMinutes.value.trim() || '60',
+      digest_refresh_min_messages: String(toPositiveInt(minMessages.value, 100)),
+      digest_refresh_min_minutes: String(toPositiveInt(minMinutes.value, 60)),
     })
     prefsSaved.value = true
     toast.success('整理偏好已保存')
@@ -167,7 +177,7 @@ function chatLabel(chat: ChatSetting) {
               <label for="digest-min-messages">多少条消息算一段</label>
               <input
                 id="digest-min-messages"
-                v-model="minMessages"
+                v-model.number="minMessages"
                 class="input"
                 type="number"
                 min="1"
@@ -178,7 +188,7 @@ function chatLabel(chat: ChatSetting) {
               <label for="digest-min-minutes">隔多久算一段（分钟）</label>
               <input
                 id="digest-min-minutes"
-                v-model="minMinutes"
+                v-model.number="minMinutes"
                 class="input"
                 type="number"
                 min="1"
