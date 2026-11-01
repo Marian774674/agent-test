@@ -3,7 +3,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { CalendarClock } from 'lucide-vue-next'
 import Sheet from '@/components/Sheet.vue'
 import DateTimePicker from '@/components/DateTimePicker.vue'
-import { createMemo, patchMemo } from '@/api/memos'
+import { createMemo, patchMemo, previewReminderPlan } from '@/api/memos'
 import { CATEGORIES } from '@/api/types'
 import type { Category, Memo, MemoPatchBody } from '@/api/types'
 import { useOwner } from '@/composables/useOwner'
@@ -37,13 +37,8 @@ const IMPORTANCE_OPTIONS = [
   { value: 1, label: '存档' },
 ]
 
-const PLAN: Record<number, string> = {
-  5: '提前 24 小时、2 小时、30 分钟各提醒一次',
-  4: '提前 24 小时、1 小时各提醒一次',
-  3: '提前 2 小时提醒一次',
-  2: '当天 09:00 提醒一次',
-  1: '只存档，不提醒',
-}
+/* 提醒计划现在由后端按「事情类型」排（design/api_contract.md §5.1）。
+ * 预览走同一个接口，避免前端再抄一份策略：抄的那份一定会和实际排出来的漂移。 */
 
 const form = reactive({
   title: '',
@@ -71,66 +66,28 @@ function rejectField(message: string) {
   titleInput.value?.focus({ preventScroll: true })
 }
 
-/* ── 时间快捷块 ─────────────────────────────────────────────
- * 手机上点 datetime-local 要滚三列滚轮，多数场景其实只是
- * 「今晚」「明早」这几种。给四个常用档位，剩下的才走自定义。 */
+/* ── 截止时间 ───────────────────────────────────────────────
+ * 只留「自定义 + 不设时间」两个选项。原来的「今晚 20:00 / 明早 09:00 …」
+ * 四个快捷档位猜不准具体事情，又和「到期时提醒」叠在一起显得更乱；
+ * 默认就是自定义，点了直接弹系统选择器。 */
 
 const anchor = ref(new Date())
-const customOpen = ref(false)
 const pickerOpen = ref(false)
 
-function atTime(base: Date, hours: number, minutes = 0) {
-  const next = new Date(base)
-  next.setHours(hours, minutes, 0, 0)
-  return next
-}
-
-const presets = computed(() => {
-  const base = anchor.value
-
-  const tonight = atTime(base, 20)
-  const tonightRolled = tonight.getTime() <= base.getTime()
-  if (tonightRolled) tonight.setDate(tonight.getDate() + 1)
-
-  const tomorrowMorning = atTime(base, 9)
-  tomorrowMorning.setDate(tomorrowMorning.getDate() + 1)
-
-  const tomorrowEvening = atTime(base, 18)
-  tomorrowEvening.setDate(tomorrowEvening.getDate() + 1)
-
-  const nextMonday = atTime(base, 9)
-  const offset = (8 - nextMonday.getDay()) % 7 || 7
-  nextMonday.setDate(nextMonday.getDate() + offset)
-
-  return [
-    {
-      key: 'tonight',
-      label: `${tonightRolled ? '明晚' : '今晚'} 20:00`,
-      value: toDatetimeLocalValue(tonight),
-    },
-    { key: 'tomorrow-morning', label: '明早 09:00', value: toDatetimeLocalValue(tomorrowMorning) },
-    { key: 'tomorrow-evening', label: '明天 18:00', value: toDatetimeLocalValue(tomorrowEvening) },
-    { key: 'next-monday', label: '下周一 09:00', value: toDatetimeLocalValue(nextMonday) },
-  ]
-})
-
-function pickPreset(value: string) {
-  form.due = value
-  customOpen.value = false
+/** 一小时后、向上取整点：setMinutes(0) 会落到刚好几分钟后这种奇怪的值 */
+function defaultDue() {
+  const next = new Date(anchor.value.getTime() + 60 * 60 * 1000)
+  next.setHours(next.getHours() + (next.getMinutes() ? 1 : 0), 0, 0, 0)
+  return toDatetimeLocalValue(next)
 }
 
 function openCustom() {
-  customOpen.value = true
-  if (form.due) return
-  // 默认「一小时后、向上取整点」：直接 setMinutes(0) 会落到刚好几分钟后这种奇怪的值
-  const next = new Date(anchor.value.getTime() + 60 * 60 * 1000)
-  next.setHours(next.getHours() + (next.getMinutes() ? 1 : 0), 0, 0, 0)
-  form.due = toDatetimeLocalValue(next)
+  pickerOpen.value = true
+  if (!form.due) form.due = defaultDue()
 }
 
 function pickNone() {
   form.due = ''
-  customOpen.value = false
 }
 
 /* ── 自定义时间的显示 ───────────────────────────────────────
@@ -154,10 +111,37 @@ const dueText = computed(() => {
   return relativeUntil(fromDatetimeLocalValue(form.due))
 })
 
-const planText = computed(() => {
-  if (!form.due) return '只存档，不会创建提醒'
-  return PLAN[form.importance]
-})
+const planText = ref('')
+
+/* 预览要打后端，用自增 token 丢掉过期响应：快速改类型/改时间时，
+ * 先发的请求可能后回，直接赋值会把新计划覆盖成旧计划。 */
+let planToken = 0
+watch(
+  () => [form.category, form.importance, form.due] as const,
+  async () => {
+    const token = ++planToken
+    if (!form.due) {
+      planText.value = '只存档，不会创建提醒'
+      return
+    }
+    try {
+      const plan = await previewReminderPlan({
+        category: form.category,
+        importance: form.importance,
+        dueTime: fromDatetimeLocalValue(form.due),
+      })
+      if (token !== planToken) return
+      planText.value = !plan.length
+        ? '这个时间已经过去，不会创建提醒'
+        : plan.length === 1
+          ? `${plan[0].text}提醒一次`
+          : `${plan.map((item) => item.text).join('、')}各提醒一次`
+    } catch {
+      if (token === planToken) planText.value = ''
+    }
+  },
+  { immediate: true },
+)
 
 watch(
   () => props.open,
@@ -173,9 +157,8 @@ watch(
     form.content = memo?.content ?? ''
     form.importance = memo?.importance ?? 3
     form.category = memo?.category ?? '学业'
-    const dueValue = toDatetimeLocalValue(memo?.dueTime)
-    form.due = dueValue
-    customOpen.value = Boolean(dueValue) && !presets.value.some((item) => item.value === dueValue)
+    // 编辑已有备忘：按它自己的到期时间；新建或它本来就没时间：新建给个默认值，编辑保持空
+    form.due = memo ? toDatetimeLocalValue(memo.dueTime) : defaultDue()
     errors.title = ''
     errors.form = ''
   },
@@ -269,19 +252,9 @@ async function save() {
         <span class="frow-label">截止时间</span>
         <div class="presets">
           <button
-            v-for="preset in presets"
-            :key="preset.key"
             type="button"
             class="preset"
-            :aria-pressed="form.due === preset.value"
-            @click="pickPreset(preset.value)"
-          >
-            {{ preset.label }}
-          </button>
-          <button
-            type="button"
-            class="preset"
-            :aria-pressed="customOpen"
+            :aria-pressed="Boolean(form.due)"
             @click="openCustom"
           >
             自定义
@@ -296,7 +269,7 @@ async function save() {
           </button>
         </div>
         <button
-          v-if="customOpen"
+          v-if="form.due"
           type="button"
           class="time-line"
           aria-label="选择具体日期和时间"

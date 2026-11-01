@@ -6,10 +6,11 @@ import com.czx.qqmessageassistantjava.dto.MemoPatchRequest;
 import com.czx.qqmessageassistantjava.common.BusinessException;
 import com.czx.qqmessageassistantjava.entity.Memo;
 import com.czx.qqmessageassistantjava.entity.MemoChangeLog;
-import com.czx.qqmessageassistantjava.entity.MemoReminder;
 import com.czx.qqmessageassistantjava.service.AgentOpService;
 import com.czx.qqmessageassistantjava.service.MemoService;
 import com.czx.qqmessageassistantjava.vo.MemoOpenItem;
+import com.czx.qqmessageassistantjava.vo.MemoReminderVO;
+import com.czx.qqmessageassistantjava.vo.ReminderPlanItemVO;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -29,7 +30,7 @@ public class MemoController {
     private AgentOpService agentOpService;
 
 
-    @Operation(summary = "创建备忘", description = "按 importance 展开提醒计划")
+    @Operation(summary = "创建备忘", description = "按 category 展开提醒计划（importance=1 只存档不提醒）")
     @PostMapping
     public Result<Memo> create(@RequestBody MemoCreateRequest request){
         return Result.ok(memoService.create(request));
@@ -63,13 +64,29 @@ public class MemoController {
         return Result.ok(memo);
     }
 
-    @Operation(summary = "提醒计划", description = "按 importance 展开的每档提醒时间与发送状态")
+    @Operation(summary = "提醒计划", description = "每档提醒的时间、中文说明与发送状态")
     @GetMapping("/{id}/reminders")
-    public Result<List<MemoReminder>> reminders(@PathVariable Long id) {
+    public Result<List<MemoReminderVO>> reminders(@PathVariable Long id) {
         return Result.ok(memoService.reminders(id));
     }
 
-    @Operation(summary = "编辑/完成/取消", description = "改 importance/dueTime 会重算提醒；DONE/CANCELLED 会撤销未发提醒")
+    @Operation(summary = "提醒预览", description = "按当前策略试算还没创建的备忘会怎么提醒，供编辑器实时展示")
+    @GetMapping("/reminder-preview")
+    public Result<List<ReminderPlanItemVO>> preview(
+            @RequestParam(required = false) String category,
+            @RequestParam(required = false) String dueTime,
+            @RequestParam(required = false) Integer importance) {
+        return Result.ok(memoService.previewPlan(category, dueTime, importance));
+    }
+
+    @Operation(summary = "重新排提醒", description = "按当前策略重排：旧的未发提醒置 CANCELLED，不删除")
+    @PostMapping("/{id}/replan")
+    public Result<List<MemoReminderVO>> replan(@PathVariable Long id) {
+        memoService.replan(id);
+        return Result.ok(memoService.reminders(id));
+    }
+
+    @Operation(summary = "编辑/完成/取消", description = "改 category/importance/dueTime 会重算提醒；DONE/CANCELLED 会撤销未发提醒")
     @PatchMapping("/{id}")
     public Result<Memo> patch(@PathVariable Long id,@RequestBody MemoPatchRequest request){
         return Result.ok(memoService.patch(id,request));

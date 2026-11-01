@@ -5,7 +5,7 @@ import com.czx.qqmessageassistantjava.dto.AgentOpsRequest;
 import com.czx.qqmessageassistantjava.dto.MemoCreateRequest;
 import com.czx.qqmessageassistantjava.entity.Memo;
 import com.czx.qqmessageassistantjava.entity.MemoChangeLog;
-import com.czx.qqmessageassistantjava.entity.MemoReminder;
+import com.czx.qqmessageassistantjava.vo.MemoReminderVO;
 import com.czx.qqmessageassistantjava.mapper.MemoChangeLogMapper;
 import com.czx.qqmessageassistantjava.vo.AgentOpsResult;
 import com.czx.qqmessageassistantjava.vo.MemoOpenItem;
@@ -43,7 +43,7 @@ class AgentOpServiceTest {
         return request;
     }
 
-    private List<MemoReminder> remindersOf(Long memoId) {
+    private List<MemoReminderVO> remindersOf(Long memoId) {
         return memoService.reminders(memoId);
     }
 
@@ -77,13 +77,16 @@ class AgentOpServiceTest {
         assertThat(memo.getCategory()).isEqualTo("其他");
         assertThat(memo.getStatus()).isEqualTo("ACTIVE");
         assertThat(result.getMessage()).startsWith("记下了：");
-        assertThat(result.getReminders()).hasSize(3);
+        // 落不认识的分类 = 「其他」，计划按类型走：提前 1 小时 + 到期各一次
+        assertThat(result.getReminders()).hasSize(2);
+        assertThat(result.getReminders().get(0).getOffsetLabel()).isEqualTo("-1h");
+        assertThat(result.getReminders().get(1).getOffsetLabel()).isEqualTo("截止");
     }
 
     @Test
     void updateMovesDueTimeAndRebuildsReminders() {
         Memo memo = seed(3, soon().plusDays(3));
-        List<Long> oldReminderIds = remindersOf(memo.getId()).stream().map(MemoReminder::getId).toList();
+        List<Long> oldReminderIds = remindersOf(memo.getId()).stream().map(MemoReminderVO::getId).toList();
         assertThat(oldReminderIds).isNotEmpty();
 
         String newDue = soon().plusDays(5).toString(); // ISO 写法

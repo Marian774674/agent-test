@@ -49,6 +49,27 @@ app:
     enabled: true
     scan-interval-ms: 60000
     batch-size: 50
+    # 提醒计划按「事情类型」排，不看 importance（design/api_contract.md §5.1）。
+    # 标签写法：@08:00=当天此刻；-1d@20:00=前一天 20:00；-2h / -30m=相对到期提前。
+    # 只给了日期的备忘（解析成 00:00）会以当天 09:00 为锚点，所以不会算出半夜的提醒。
+    # 含到期那一条（每条备忘都会在到期时提醒一次，纯存档的 1 级除外）
+    max-per-memo: 3
+    dedupe-minutes: 20
+    # 写成列表而不是「中文 key: 标签」的映射：Spring 属性名只认 ASCII，
+    # 中文 key 绑不上会静默退回 Java 出厂值。加一个类型就加一项，category 用 memo 的六个分类。
+    policy:
+      - category: 学业
+        points: ['-1d@20:00', '-1h']
+      - category: 财务
+        points: ['-1d@10:00', '@08:00']
+      - category: 社交
+        points: ['-2h', '-30m']
+      - category: 健康
+        points: ['-30m']
+      - category: 日常
+        points: ['-30m']
+      - category: 其他
+        points: ['-1h']
   embedding:
     # 语义检索（design/intelligent_retrieval.md §4）。
     # 模型文件不入库：先跑 QQMessageAssistantJava/scripts/fetch-embedding-model.sh。

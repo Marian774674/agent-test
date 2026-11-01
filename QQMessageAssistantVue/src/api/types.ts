@@ -36,12 +36,20 @@ export type ReminderStatus = 'PENDING' | 'SENT' | 'CANCELLED'
 
 export interface MemoReminder {
   id: number
-  memoId: number
+  /** 档位标签，如 -1d@20:00 / -1h / 立即 */
   offsetLabel: string
+  /** 后端翻译好的中文说明，如「前一天 20:00」；前端不再自己维护映射表 */
+  offsetText: string
   remindAt: string
   status: ReminderStatus
   sentAt: string | null
-  createdAt: string
+}
+
+/** 编辑器里的「将在这几个时刻提醒你」预览 */
+export interface ReminderPlanItem {
+  label: string
+  text: string
+  remindAt: string
 }
 
 export type MemoChangeSource = 'AGENT' | 'VUE'
