@@ -53,6 +53,16 @@ export function isSameDay(a: Date, b: Date): boolean {
   return dayKey(a) === dayKey(b)
 }
 
+/**
+ * 相差几个「自然日」（不是 24 小时）。
+ * 按日历日算，否则 23:30 和次日 00:10 只差 40 分钟却会被算成 0 天。
+ * 负数表示已经过去。
+ */
+export function dayDiff(a: Date, b: Date): number {
+  const startOf = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+  return Math.round((startOf(a) - startOf(b)) / 86_400_000)
+}
+
 export function isToday(date: Date): boolean {
   return isSameDay(date, new Date())
 }

@@ -7,7 +7,6 @@ const props = withDefaults(
     open: boolean
     title: string
     description?: string
-    tone?: 'dark' | 'light'
     /** 占屏高度上限，默认 88% */
     height?: string
     /** View Transitions 的共享元素名 */
@@ -17,7 +16,7 @@ const props = withDefaults(
     /** 叠在另一个抽屉上面（选择器之类）：不锁背景，Esc 只关自己 */
     nested?: boolean
   }>(),
-  { description: '', tone: 'dark', height: '88%', vtName: '', instant: false, nested: false },
+  { description: '', height: '88%', vtName: '', instant: false, nested: false },
 )
 
 const emit = defineEmits<{ close: [] }>()
@@ -185,7 +184,7 @@ onBeforeUnmount(cleanup)
         <section
           ref="panel"
           class="panel"
-          :class="[tone, { dragging }]"
+          :class="{ dragging }"
           role="dialog"
           aria-modal="true"
           :aria-label="title"
@@ -202,9 +201,15 @@ onBeforeUnmount(cleanup)
             @pointerup="onDragEnd"
             @pointercancel="onDragEnd"
           >
+            <!--
+              默认是「衬线标题 + 一行说明」。详情类抽屉需要更重的报头
+              （印章 / 细线 / 日期 / 更大的标题），由使用方用 #head 接管。
+            -->
             <header class="head">
-              <h2 class="title">{{ title }}</h2>
-              <p v-if="description" class="desc">{{ description }}</p>
+              <slot name="head">
+                <h2 class="title">{{ title }}</h2>
+                <p v-if="description" class="desc">{{ description }}</p>
+              </slot>
             </header>
           </div>
 
@@ -258,25 +263,20 @@ onBeforeUnmount(cleanup)
   flex-direction: column;
   width: 100%;
   border-radius: var(--r-sheet) var(--r-sheet) 0 0;
+  /*
+   * 抽屉只有一种材质：纸。
+   * 之前分「深色（看）/ 纸白（写）」两种，结果详情抽屉一拉开就是一整块近黑，
+   * 和外面的暖纸页面对撞。材质统一后，深浅只由内容和留白决定。
+   */
+  background: linear-gradient(180deg, var(--bg-top) 0%, var(--bg) 42%, var(--bg) 100%);
+  border-top: 1px solid var(--hairline);
+  color: var(--ink);
   box-shadow: 0 -18px 60px -30px rgba(28, 22, 16, 0.55);
   transition: transform var(--dur-3) var(--ease-spring);
 }
 
 .panel.dragging {
   transition: none;
-}
-
-/* 深色抽屉也是「一张纸」：顶部一道极淡的高光压边，往下沉到近黑 */
-.panel.dark {
-  background: linear-gradient(180deg, #1c1a20 0%, #16151a 46%, #100f13 100%);
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
-  color: var(--on-dark);
-}
-
-.panel.light {
-  background: var(--bg);
-  border-top: 1px solid var(--hairline);
-  color: var(--ink);
 }
 
 .grip-close {
@@ -290,18 +290,12 @@ onBeforeUnmount(cleanup)
   height: 40px;
   border: 0;
   border-radius: 50%;
-  background: #2c2c2e;
-  color: #fff;
-  box-shadow: 0 6px 20px -8px rgba(0, 0, 0, 0.6);
-  cursor: pointer;
-  z-index: 2;
-}
-
-.panel.light .grip-close {
   background: var(--card);
   border: 1px solid var(--hairline);
   color: var(--ink);
   box-shadow: 0 6px 20px -10px rgba(46, 38, 26, 0.5);
+  cursor: pointer;
+  z-index: 2;
 }
 
 .drag-zone {
@@ -355,20 +349,8 @@ onBeforeUnmount(cleanup)
   border-top: 1px solid var(--hairline);
 }
 
-.panel.dark .foot {
-  border-top-color: rgba(255, 255, 255, 0.1);
-}
-
 .foot :deep(.btn) {
   flex: 1;
-}
-
-.panel.dark .foot :deep(.btn-ghost) {
-  color: rgba(255, 255, 255, 0.78);
-}
-
-.panel.dark .foot :deep(.btn-ghost:active) {
-  background: rgba(255, 255, 255, 0.08);
 }
 
 .sheet-enter-active,

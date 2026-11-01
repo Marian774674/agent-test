@@ -252,8 +252,7 @@ async function remove() {
 
     <Sheet
       :open="sheetOpen"
-      tone="light"
-      :title="editing ? '编辑规则' : '新建规则'"
+        :title="editing ? '编辑规则' : '新建规则'"
       description="关键词与正则满足其一即命中；命中后仍会先查防重再发送。"
       height="92%"
       @close="sheetOpen = false"

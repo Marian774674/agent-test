@@ -6,6 +6,7 @@ import ErrorState from '@/components/ErrorState.vue'
 import PageHead from '@/components/PageHead.vue'
 import Sheet from '@/components/Sheet.vue'
 import Skeleton from '@/components/Skeleton.vue'
+import SheetHead from '@/components/SheetHead.vue'
 import StatusPill from '@/components/StatusPill.vue'
 import { listFileTasks } from '@/api/files'
 import type { FileTask } from '@/api/types'
@@ -182,9 +183,15 @@ const selectedMeta = computed(() => fileStatusMeta(selected.value?.status ?? '')
     <Sheet
       :open="sheetOpen"
       :title="selected?.fileName || '文件任务'"
-      :description="selected ? selected.taskRef : undefined"
       @close="sheetOpen = false"
     >
+      <template #head>
+        <SheetHead
+          :title="selected?.fileName || '文件任务'"
+          :stamp="selectedMeta.label"
+          :meta="selected?.taskRef"
+        />
+      </template>
       <template v-if="selected">
         <div class="facts">
           <div class="fact">
@@ -226,7 +233,7 @@ const selectedMeta = computed(() => fileStatusMeta(selected.value?.status ?? '')
       </template>
 
       <template #footer>
-        <button type="button" class="btn btn-on-dark" @click="sheetOpen = false">关闭</button>
+        <button type="button" class="btn btn-ghost" @click="sheetOpen = false">关闭</button>
       </template>
     </Sheet>
   </div>
@@ -309,12 +316,10 @@ const selectedMeta = computed(() => fileStatusMeta(selected.value?.status ?? '')
   font-size: 10.5px;
 }
 
+/* 详情清单不套白卡：纸面上再加一层白块，等于凭空多一道边框。
+   发丝线分隔就够，和备忘详情里那两张清单是同一套。 */
 .facts {
   display: grid;
-  gap: 1px;
-  overflow: hidden;
-  border-radius: var(--r-md);
-  background: #fff;
 }
 
 .fact {
@@ -322,7 +327,7 @@ const selectedMeta = computed(() => fileStatusMeta(selected.value?.status ?? '')
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 12px 14px;
+  padding: 9px 0;
   color: var(--ink);
 }
 
@@ -340,20 +345,27 @@ const selectedMeta = computed(() => fileStatusMeta(selected.value?.status ?? '')
 }
 
 .detail-title {
-  margin: 18px 0 8px;
-  color: var(--on-dark-2);
-  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 22px 0 9px;
+  color: var(--ink-3);
+  font-size: 10.5px;
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.16em;
+}
+
+.detail-title::after {
+  content: '';
+  flex: 1;
+  min-width: 10px;
+  height: 1px;
+  background: var(--rule);
 }
 
 .detail-list {
   display: grid;
-  gap: 1px;
   margin: 0;
-  overflow: hidden;
-  border-radius: var(--r-md);
-  background: #fff;
 }
 
 .detail-row {
@@ -361,7 +373,7 @@ const selectedMeta = computed(() => fileStatusMeta(selected.value?.status ?? '')
   grid-template-columns: minmax(0, auto) minmax(0, 1fr);
   align-items: baseline;
   gap: 12px;
-  padding: 10px 14px;
+  padding: 8px 0;
   color: var(--ink);
 }
 
@@ -389,7 +401,7 @@ const selectedMeta = computed(() => fileStatusMeta(selected.value?.status ?? '')
 
 .raw summary {
   padding: 4px 0;
-  color: var(--on-dark-3);
+  color: var(--ink-3);
   font-size: 11.5px;
   cursor: pointer;
 }
@@ -401,9 +413,10 @@ const selectedMeta = computed(() => fileStatusMeta(selected.value?.status ?? '')
 .detail-json {
   margin: 0;
   padding: 12px 14px;
-  border-radius: var(--r-md);
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--on-dark-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+  background: rgba(255, 253, 250, 0.7);
+  color: var(--ink-2);
   font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.6;

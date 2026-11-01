@@ -9,6 +9,7 @@ import type { Category, Memo, MemoPatchBody } from '@/api/types'
 import { useOwner } from '@/composables/useOwner'
 import { useToast } from '@/composables/useToast'
 import {
+  dayDiff,
   formatHeadDate,
   formatTime,
   fromDatetimeLocalValue,
@@ -138,11 +139,6 @@ function pickNone() {
  * 设成透明，盖一层自己排的「今天 · 15:00」；点整行仍然由原生控件
  * 接住（指示器被拉到整行大小、透明度 0），弹的还是系统日期选择器。 */
 
-function dayDiff(a: Date, b: Date) {
-  const startOf = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
-  return Math.round((startOf(a) - startOf(b)) / 86_400_000)
-}
-
 const customParts = computed(() => {
   const date = parseLocal(form.due)
   if (!date) return null
@@ -237,7 +233,6 @@ async function save() {
 <template>
   <Sheet
     :open="open"
-    tone="light"
     height="94%"
     :title="isEdit ? '编辑备忘' : '新建备忘'"
     :description="isEdit ? '改重要性或时间会重算提醒计划' : '写清楚要做的事，再决定什么时候提醒你'"
