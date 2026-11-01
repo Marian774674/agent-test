@@ -182,9 +182,12 @@ async def _respond(deps, ctx, is_group, sender_id, chat_id, text,
                              f"kind={gate.send_kind} chat={chat_id}")
         if gate.draft:
             try:
+                # 标题留空、正文写要发的话、sourceContent 写对方说了什么。
+                # 以前拿正文前 20 字当标题，草稿卡会把同一句显示两遍，还看不出在回谁。
                 await deps.spring.create_draft(
-                    "REPLY", sender_id, chat_id,
-                    gate.draft["content"][:20], {"content": gate.draft["content"]})
+                    "REPLY", sender_id, chat_id, None,
+                    {"content": gate.draft["content"],
+                     "sourceContent": (query or "").strip()[:200]})
                 file_store.debug(f"reply draft created for chat={chat_id}")
             except Exception as e:
                 # 草稿没建成 = 这条回复彻底没了。宁可让用户等一句「没办成」，也别假装发过

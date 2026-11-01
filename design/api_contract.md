@@ -105,7 +105,11 @@
 ```jsonc
 // REPLY —— 拟人回复草稿
 // targetType 默认 "private"；targetId 缺省时按 chatId → senderId 回退
-{ "content": "好的，我看看", "targetType": "private", "targetId": 2002 }
+// content = 要发出去的话（草稿卡主句）；sourceContent = 对方说的那句（卡片顶部的引文），
+// 免得确认时看不出在回谁。title 当摘要用，别把 content 再塞一遍——
+// 前端会同时渲染 title 与 content，重复的内容在卡片上会出现两次。
+{ "content": "好的，我看看", "sourceContent": "明天几点呀？",
+  "targetType": "private", "targetId": 2002 }
 
 // FILE —— 文件回传草稿
 { "taskRef": "ft_0001", "fileName": "表单.xlsx", "fileRef": "local://out/ft_0001.xlsx" }

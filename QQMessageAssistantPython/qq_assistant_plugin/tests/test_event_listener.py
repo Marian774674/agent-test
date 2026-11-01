@@ -339,6 +339,10 @@ async def test_needs_confirm_creates_a_reply_draft_instead_of_sending(deps):
     assert draft.args[0] == "REPLY"
     # create_draft(type, senderId, chatId, title, payload)
     assert draft.args[4]["content"] == "行，明天下午三点我过去"
+    # 标题不是「要发的话」：标题一写正文，草稿卡上同一句就会显示两遍
+    assert draft.args[3] is None
+    # 对方问了什么必须存下来，否则确认时看不到自己在回谁
+    assert draft.args[4]["sourceContent"] == "明天三点你能来吗"
     assert deps.dispatcher.handle.await_args.args[0]["content"] == ""
 
 

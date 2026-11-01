@@ -59,10 +59,24 @@ function field(key: string): string {
   return typeof value === 'string' ? value : ''
 }
 
+/**
+ * 回复草稿要让人看清「在回谁」。
+ * 新草稿把对方那句话存在 payload.sourceContent；老草稿没有，只能退回 title——
+ * 但 title 要是和正文一样（旧版本拿正文前 20 字当标题），就不能再显示一遍。
+ */
+const context = computed(() => {
+  if (props.draft.type !== 'REPLY') return ''
+  const source = field('sourceContent').trim()
+  if (source) return source
+  const title = (props.draft.title ?? '').trim()
+  return title && title !== field('content').trim() ? title : ''
+})
+
 const headline = computed(() => {
   const { title, type } = props.draft
+  // 回复的主句永远是「要发出去的那句话」，标题只是摘要，不能替代它
+  if (type === 'REPLY') return field('content') || title || '一条回复'
   if (title) return title
-  if (type === 'REPLY') return field('content').slice(0, 60) || '一条回复'
   if (type === 'MEMO') return field('title') || '一条备忘'
   if (type === 'FACT') return `${field('factKey') || '事实'}：${field('factValue')}`
   if (type === 'FILE') return field('fileName') || '一个文件'
@@ -71,10 +85,8 @@ const headline = computed(() => {
 
 const preview = computed(() => {
   const { type } = props.draft
-  if (type === 'REPLY') {
-    // 有标题时标题是摘要，正文必须完整露出来，否则确认前看不到要发什么
-    return props.draft.title ? field('content') : ''
-  }
+  // REPLY 的正文已经是主句，再放一遍预览就是同一句话出现两遍
+  if (type === 'REPLY') return ''
   if (type === 'MEMO') {
     const parts = [field('content'), field('dueTime') ? formatDateTime(field('dueTime')) : '']
     return parts.filter(Boolean).join(' ／ ')
@@ -118,6 +130,10 @@ async function resolve(action: 'confirm' | 'reject') {
       <StatusPill v-if="!isPending" :label="statusMeta.label" :tone="statusMeta.tone" :dot="false" />
     </header>
 
+    <p v-if="context" class="context">
+      <span class="context-label">对方</span>
+      {{ context }}
+    </p>
     <p class="headline">{{ headline }}</p>
     <p v-if="preview" class="preview clamp-3">{{ preview }}</p>
 
@@ -191,6 +207,25 @@ async function resolve(action: 'confirm' | 'reject') {
 
 .head .status {
   margin-left: auto;
+}
+
+/* 对方那句话：引线在左，压低一档，别和要发出去的正文抢注意力 */
+.context {
+  display: -webkit-box;
+  margin-bottom: 7px;
+  padding-left: 9px;
+  border-left: 2px solid var(--hairline);
+  color: var(--ink-3);
+  font-size: 12.5px;
+  line-height: 1.55;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.context-label {
+  margin-right: 5px;
+  font-weight: 600;
 }
 
 .headline {
