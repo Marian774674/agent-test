@@ -6,6 +6,7 @@ import type {
   MemoPatchBody,
   MemoReminder,
   MemoStatus,
+  ReminderPlanItem,
 } from './types'
 
 export function listMemos(params: { status?: MemoStatus; senderId?: number } = {}) {
@@ -18,6 +19,24 @@ export function getMemo(id: number) {
 
 export function listReminders(id: number) {
   return http.get<MemoReminder[]>(`/api/memos/${id}/reminders`)
+}
+
+/** 试算还没保存的备忘会怎么提醒；与真实排程用同一份策略，不会出现「预览说的」和「实际排的」不一致 */
+export function previewReminderPlan(params: {
+  category?: string | null
+  dueTime?: string | null
+  importance?: number
+}) {
+  return http.get<ReminderPlanItem[]>('/api/memos/reminder-preview', {
+    category: params.category,
+    dueTime: params.dueTime,
+    importance: params.importance,
+  })
+}
+
+/** 按当前策略重排未发提醒（旧档置 CANCELLED，不删） */
+export function replanReminders(id: number) {
+  return http.post<MemoReminder[]>(`/api/memos/${id}/replan`)
 }
 
 export function listMemoHistory(id: number) {

@@ -8,7 +8,7 @@ import com.czx.qqmessageassistantjava.dto.MemoCreateRequest;
 import com.czx.qqmessageassistantjava.dto.MemoPatchRequest;
 import com.czx.qqmessageassistantjava.entity.Memo;
 import com.czx.qqmessageassistantjava.entity.MemoChangeLog;
-import com.czx.qqmessageassistantjava.entity.MemoReminder;
+import com.czx.qqmessageassistantjava.vo.MemoReminderVO;
 import com.czx.qqmessageassistantjava.mapper.MemoChangeLogMapper;
 import com.czx.qqmessageassistantjava.service.AgentOpService;
 import com.czx.qqmessageassistantjava.service.MemoService;
@@ -247,7 +247,7 @@ public class AgentOpServiceImpl implements AgentOpService {
         return result;
     }
 
-    private AgentOpsResult.ReminderBrief brief(MemoReminder reminder) {
+    private AgentOpsResult.ReminderBrief brief(MemoReminderVO reminder) {
         AgentOpsResult.ReminderBrief brief = new AgentOpsResult.ReminderBrief();
         brief.setOffsetLabel(reminder.getOffsetLabel());
         brief.setRemindAt(reminder.getRemindAt());

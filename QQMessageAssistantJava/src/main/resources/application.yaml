@@ -49,6 +49,18 @@ app:
     enabled: true
     scan-interval-ms: 60000
     batch-size: 50
+    # 提醒计划按「事情类型」排，不看 importance（design/api_contract.md §5.1）。
+    # 标签写法：@08:00=当天此刻；-1d@20:00=前一天 20:00；-2h / -30m=相对到期提前。
+    # 只给了日期的备忘（解析成 00:00）会以当天 09:00 为锚点，所以不会算出半夜的提醒。
+    max-per-memo: 2
+    dedupe-minutes: 20
+    policy:
+      学业: ['-1d@20:00', '-1h']
+      财务: ['-1d@10:00', '@08:00']
+      社交: ['-2h', '-30m']
+      健康: ['-30m']
+      日常: ['-30m']
+      其他: ['-1h']
   embedding:
     # 语义检索（design/intelligent_retrieval.md §4）。
     # 模型文件不入库：先跑 QQMessageAssistantJava/scripts/fetch-embedding-model.sh。

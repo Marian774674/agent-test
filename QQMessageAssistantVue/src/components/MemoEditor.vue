@@ -3,7 +3,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { CalendarClock } from 'lucide-vue-next'
 import Sheet from '@/components/Sheet.vue'
 import DateTimePicker from '@/components/DateTimePicker.vue'
-import { createMemo, patchMemo } from '@/api/memos'
+import { createMemo, patchMemo, previewReminderPlan } from '@/api/memos'
 import { CATEGORIES } from '@/api/types'
 import type { Category, Memo, MemoPatchBody } from '@/api/types'
 import { useOwner } from '@/composables/useOwner'
@@ -37,13 +37,8 @@ const IMPORTANCE_OPTIONS = [
   { value: 1, label: '存档' },
 ]
 
-const PLAN: Record<number, string> = {
-  5: '提前 24 小时、2 小时、30 分钟各提醒一次',
-  4: '提前 24 小时、1 小时各提醒一次',
-  3: '提前 2 小时提醒一次',
-  2: '当天 09:00 提醒一次',
-  1: '只存档，不提醒',
-}
+/* 提醒计划现在由后端按「事情类型」排（design/api_contract.md §5.1）。
+ * 预览走同一个接口，避免前端再抄一份策略：抄的那份一定会和实际排出来的漂移。 */
 
 const form = reactive({
   title: '',
@@ -154,10 +149,37 @@ const dueText = computed(() => {
   return relativeUntil(fromDatetimeLocalValue(form.due))
 })
 
-const planText = computed(() => {
-  if (!form.due) return '只存档，不会创建提醒'
-  return PLAN[form.importance]
-})
+const planText = ref('')
+
+/* 预览要打后端，用自增 token 丢掉过期响应：快速改类型/改时间时，
+ * 先发的请求可能后回，直接赋值会把新计划覆盖成旧计划。 */
+let planToken = 0
+watch(
+  () => [form.category, form.importance, form.due] as const,
+  async () => {
+    const token = ++planToken
+    if (!form.due) {
+      planText.value = '只存档，不会创建提醒'
+      return
+    }
+    try {
+      const plan = await previewReminderPlan({
+        category: form.category,
+        importance: form.importance,
+        dueTime: fromDatetimeLocalValue(form.due),
+      })
+      if (token !== planToken) return
+      planText.value = !plan.length
+        ? '这个时间已经过去，不会创建提醒'
+        : plan.length === 1
+          ? `${plan[0].text}提醒一次`
+          : `${plan.map((item) => item.text).join('、')}各提醒一次`
+    } catch {
+      if (token === planToken) planText.value = ''
+    }
+  },
+  { immediate: true },
+)
 
 watch(
   () => props.open,

@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.czx.qqmessageassistantjava.common.BusinessException;
+import com.czx.qqmessageassistantjava.common.FlexibleLocalDateTimeDeserializer;
 import com.czx.qqmessageassistantjava.controller.MemoController;
 import com.czx.qqmessageassistantjava.dto.MemoCreateRequest;
 import com.czx.qqmessageassistantjava.dto.MemoPatchRequest;
@@ -16,8 +17,12 @@ import com.czx.qqmessageassistantjava.entity.Memo;
 import com.czx.qqmessageassistantjava.entity.MemoReminder;
 import com.czx.qqmessageassistantjava.mapper.MemoMapper;
 import com.czx.qqmessageassistantjava.mapper.MemoReminderMapper;
+import com.czx.qqmessageassistantjava.memo.ReminderPlanner;
+import com.czx.qqmessageassistantjava.memo.ReminderPolicyProperties;
 import com.czx.qqmessageassistantjava.service.MemoService;
 import com.czx.qqmessageassistantjava.vo.MemoOpenItem;
+import com.czx.qqmessageassistantjava.vo.MemoReminderVO;
+import com.czx.qqmessageassistantjava.vo.ReminderPlanItemVO;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -33,16 +38,12 @@ public class MemoServiceImpl extends ServiceImpl<MemoMapper, Memo> implements Me
     private static final Set<String> CATEGORIES =
             Set.of("学业","社交","健康","财务","日常","其他");
     private static final Set<String> PATCH_STATUSES = Set.of("DONE","CANCELLED");
-    private static final Map<Integer,List<String>> REMINDER_STRATEGY = Map.of(
-           5, List.of("24h","2h","30min"),
-           4, List.of("24h","1h"),
-           3, List.of("2h"),
-           2, List.of("当天"),
-           1, List.of()
-    );
 
     @Autowired
     private MemoReminderMapper memoReminderMapper;
+
+    @Autowired
+    private ReminderPolicyProperties reminderPolicyProperties;
 
     @Override
     @Transactional
@@ -95,8 +96,11 @@ public class MemoServiceImpl extends ServiceImpl<MemoMapper, Memo> implements Me
             throw new BusinessException("category 只能为 " + CATEGORIES + " 之一");
         }
         boolean clearDueTime = Boolean.TRUE.equals(request.getClearDueTime());
+        // 计划按 category 选，所以改分类同样要重排——旧实现在这里漏了它
         boolean needRecalc = (request.getImportance() != null && !memo.getImportance().equals(request.getImportance())
-            || request.getDueTime() != null && !request.getDueTime().equals(memo.getDueTime()))
+            || request.getDueTime() != null && !request.getDueTime().equals(memo.getDueTime())
+            || request.getCategory() != null && !request.getCategory().isBlank()
+                && !request.getCategory().equals(memo.getCategory()))
             || clearDueTime;
         BeanUtil.copyProperties(request,memo, CopyOptions.create().ignoreNullValue());
         if (clearDueTime) {
@@ -135,35 +139,16 @@ public class MemoServiceImpl extends ServiceImpl<MemoMapper, Memo> implements Me
     }
 
     private void expandReminders(Memo memo) {
-        if (memo.getDueTime() == null)return;
-        List<String> labels = REMINDER_STRATEGY.get(memo.getImportance());
-        if (labels == null) {
-            throw new BusinessException("importance 必须为 1-5");
-        }
-        LocalDateTime now = LocalDateTime.now();
-        for (String label : labels) {
-            LocalDateTime remindAt = computeRemindAt(memo.getDueTime(), label);
-            if (!remindAt.isAfter(now)) {
-                continue;                     // 过去的提醒点跳过，避免集中补发
-            }
+        List<ReminderPlanner.Planned> plan = reminderPolicyProperties.toPlanner()
+                .plan(memo.getCategory(), memo.getDueTime(), memo.getImportance(), LocalDateTime.now());
+        for (ReminderPlanner.Planned planned : plan) {
             MemoReminder reminder = new MemoReminder();
             reminder.setMemoId(memo.getId());
-            reminder.setOffsetLabel(label);
-            reminder.setRemindAt(remindAt);
+            reminder.setOffsetLabel(planned.label());
+            reminder.setRemindAt(planned.remindAt());
             reminder.setStatus("PENDING");
             memoReminderMapper.insert(reminder);
         }
-    }
-
-    private LocalDateTime computeRemindAt(LocalDateTime dueTime, String label) {
-        return switch(label){
-            case "24h" -> dueTime.minusHours(24);
-            case "2h" -> dueTime.minusHours(2);
-            case "1h" -> dueTime.minusHours(1);
-            case "30min" -> dueTime.minusMinutes(30);
-            case "当天" -> dueTime.toLocalDate().atTime(9, 0);
-            default -> throw new BusinessException("非法的提醒时间 " + label);
-        };
     }
 
     private static final String[] OPEN_STATUSES =
@@ -206,12 +191,66 @@ public class MemoServiceImpl extends ServiceImpl<MemoMapper, Memo> implements Me
     }
 
     @Override
-    public List<MemoReminder> reminders(Long memoId) {
+    public List<MemoReminderVO> reminders(Long memoId) {
         return memoReminderMapper.selectList(
-                new LambdaQueryWrapper<MemoReminder>()
-                        .eq(MemoReminder::getMemoId, memoId)
-                        .orderByAsc(MemoReminder::getRemindAt)
-        );
+                        new LambdaQueryWrapper<MemoReminder>()
+                                .eq(MemoReminder::getMemoId, memoId)
+                                .orderByAsc(MemoReminder::getRemindAt))
+                .stream()
+                .map(this::toReminderVO)
+                .toList();
+    }
+
+    @Override
+    public List<ReminderPlanItemVO> previewPlan(String category, String dueTime, Integer importance) {
+        LocalDateTime parsedDue = parseDueTime(dueTime);
+        return reminderPolicyProperties.toPlanner()
+                .plan(category, parsedDue, importance, LocalDateTime.now())
+                .stream()
+                .map(planned -> {
+                    ReminderPlanItemVO item = new ReminderPlanItemVO();
+                    item.setLabel(planned.label());
+                    item.setText(ReminderPlanner.describe(planned.label()));
+                    item.setRemindAt(planned.remindAt());
+                    return item;
+                })
+                .toList();
+    }
+
+    @Override
+    @Transactional
+    public void replan(Long memoId) {
+        Memo memo = getById(memoId);
+        if (memo == null) {
+            throw new BusinessException("备忘录不存在");
+        }
+        if ("DONE".equals(memo.getStatus()) || "CANCELLED".equals(memo.getStatus())) {
+            throw new BusinessException("已结束的备忘不需要再排提醒");
+        }
+        cancelPendingReminders(memoId);
+        expandReminders(memo);
+    }
+
+    private static LocalDateTime parseDueTime(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            return FlexibleLocalDateTimeDeserializer.parseFlexible(raw);
+        } catch (IllegalArgumentException e) {
+            throw new BusinessException("dueTime " + e.getMessage());
+        }
+    }
+
+    private MemoReminderVO toReminderVO(MemoReminder reminder) {
+        MemoReminderVO vo = new MemoReminderVO();
+        vo.setId(reminder.getId());
+        vo.setOffsetLabel(reminder.getOffsetLabel());
+        vo.setOffsetText(ReminderPlanner.describe(reminder.getOffsetLabel()));
+        vo.setRemindAt(reminder.getRemindAt());
+        vo.setStatus(reminder.getStatus());
+        vo.setSentAt(reminder.getSentAt());
+        return vo;
     }
 
     private void cancelPendingReminders(Long id) {

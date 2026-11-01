@@ -29,7 +29,7 @@
 | 1 | `draft` | 统一草稿中心（REPLY/FILE/MEMO/FACT） | 抽象①，方案①②③⑤ |
 | 2 | `message_log` | 统一消息日志（风格总结原料 + 全链路排查） | 抽象②，方案⑤ |
 | 3 | `memo` | 备忘录主体 | 方案③ |
-| 4 | `memo_reminder` | 提醒计划（按 importance 展开为多行） | 方案③ |
+| 4 | `memo_reminder` | 提醒计划（按 category 展开为多行） | 方案③ |
 | 5 | `collection_task` | 统一回复防重状态 | 方案② |
 | 6 | `intercept_rule` | 前置拦截规则（关键词 + 正则，热更新） | 方案② |
 | 7 | `profile_fact` | 事实记忆（学号/姓名… 逐条 kv） | 方案⑤ |
@@ -134,7 +134,7 @@ CREATE TABLE `memo` (
 CREATE TABLE `memo_reminder` (
   `id`           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `memo_id`      BIGINT UNSIGNED NOT NULL,
-  `offset_label` VARCHAR(16)     NOT NULL COMMENT '24h|2h|30min|1h|当天',
+  `offset_label` VARCHAR(16)     NOT NULL COMMENT '-1d@20:00|-1h|@08:00|立即（旧数据可能是 24h 等）',
   `remind_at`    DATETIME        NOT NULL,
   `status`       VARCHAR(16)     NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING|SENT|CANCELLED',
   `sent_at`      DATETIME        NULL,
@@ -145,7 +145,7 @@ CREATE TABLE `memo_reminder` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='提醒计划';
 ```
 
-> 创建 `memo` 时按其 `importance` 依策略表**展开**成多行（如 5 级 → 24h/2h/30min 三行）；改/取消 memo 时同步本表。Quartz 按 `status='PENDING' AND remind_at <= NOW()` 扫描。
+> 创建 `memo` 时按其 `category` 依策略表**展开**成多行（如 学业 → 前一天 20:00 + 提前 1 小时两行，见 `api_contract.md` §5.1）；改 `category`/`importance`/`dueTime` 或取消 memo 时同步本表。实际调度是 Spring `@Scheduled`（不是 Quartz），按 `status='PENDING' AND remind_at <= NOW()` 扫描。
 > **不建外键**（与全项目一致），`memo_id` 由应用层维护。
 
 ### 4.1 `memo_change_log` — 备忘变更留痕 + Agent 幂等台账

@@ -4,7 +4,7 @@ import { BellOff } from 'lucide-vue-next'
 import Sheet from '@/components/Sheet.vue'
 import SheetHead from '@/components/SheetHead.vue'
 import ImportanceMark from '@/components/ImportanceMark.vue'
-import { listMemoHistory, listReminders, patchMemo } from '@/api/memos'
+import { listMemoHistory, listReminders, patchMemo, replanReminders } from '@/api/memos'
 import type { Memo, MemoChangeLog, MemoReminder } from '@/api/types'
 import { useToast } from '@/composables/useToast'
 import {
@@ -38,14 +38,6 @@ const history = ref<MemoChangeLog[]>([])
 const loadingHistory = ref(false)
 const busy = ref(false)
 const confirmingCancel = ref(false)
-
-const OFFSET_LABELS: Record<string, string> = {
-  '24h': '提前 24 小时',
-  '2h': '提前 2 小时',
-  '1h': '提前 1 小时',
-  '30min': '提前 30 分钟',
-  当天: '当天 09:00',
-}
 
 const isClosed = computed(
   () => props.memo?.status === 'DONE' || props.memo?.status === 'CANCELLED',
@@ -84,8 +76,20 @@ const emptyPlanText = computed(() => {
   return '这条没排上提醒'
 })
 
-function offsetLabel(label: string) {
-  return OFFSET_LABELS[label] ?? label
+/* 把旧策略（按重要性排的 24h/2h/30min）换成当前策略。
+ * 部署后库里已有的 PENDING 行不会自动变，点一下这个按钮就行。 */
+async function replan() {
+  const memo = props.memo
+  if (!memo) return
+  busy.value = true
+  try {
+    reminders.value = (await replanReminders(memo.id)) ?? []
+    toast.success('已按当前策略重排提醒')
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : '重排失败')
+  } finally {
+    busy.value = false
+  }
 }
 
 /* ── 变更记录 ───────────────────────────────────────────────
@@ -259,6 +263,15 @@ async function cancelMemo() {
         <h3 id="plan-title" class="blk-title">
           <span>提醒计划</span>
           <span v-if="pendingCount" class="blk-count num">还剩 {{ pendingCount }} 次</span>
+          <button
+            v-if="!isClosed && !loadingReminders"
+            type="button"
+            class="blk-action"
+            :disabled="busy"
+            @click="replan"
+          >
+            重新排提醒
+          </button>
         </h3>
 
         <p v-if="loadingReminders" class="blk-none">正在读取…</p>
@@ -274,7 +287,7 @@ async function cancelMemo() {
             :class="{ off: reminder.status === 'CANCELLED' }"
           >
             <span class="reminder-when">
-              <span class="reminder-offset">{{ offsetLabel(reminder.offsetLabel) }}</span>
+              <span class="reminder-offset">{{ reminder.offsetText || reminder.offsetLabel }}</span>
               <span class="reminder-at num">{{ formatDateTime(reminder.remindAt) }}</span>
             </span>
             <span class="reminder-state">{{ reminderStatusMeta(reminder.status).label }}</span>
@@ -432,6 +445,30 @@ async function cancelMemo() {
   font-size: 13px;
   font-weight: 400;
   letter-spacing: 0;
+}
+
+/* 排在分隔线右侧的次要动作，和 .blk-count 抢同一个位置 */
+.blk-action {
+  order: 3;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--ink-2);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.blk-action:hover:not(:disabled) {
+  color: var(--ink-1);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.blk-action:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .blk-none {
